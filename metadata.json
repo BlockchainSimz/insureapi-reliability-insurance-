@@ -1,0 +1,5 @@
+{
+  "name": "InsureAPI - AI Reliability Insurance",
+  "description": "AI-powered API monitoring and reliability insurance. Predict outages, implement fallbacks, and quantify damages for claims.",
+  "requestFramePermissions": []
+}
