@@ -281,10 +281,12 @@ export default function InsuranceClaims({ monitors }: InsuranceClaimsProps) {
         <CardHeader className="border-b border-[#141414] py-4 flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-xs uppercase tracking-widest">Recent Claims History</CardTitle>
           <Dialog open={isManualDialogOpen} onOpenChange={setIsManualDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" size="sm" className="rounded-none border-[#141414] text-[9px] uppercase tracking-widest h-7 px-3 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors font-bold">
-                <Plus className="w-3 h-3 mr-2" /> File Manual Claim
-              </Button>
+            <DialogTrigger 
+              render={
+                <Button variant="outline" size="sm" className="rounded-none border-[#141414] text-[9px] uppercase tracking-widest h-7 px-3 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors font-bold" />
+              }
+            >
+              <Plus className="w-3 h-3 mr-2" /> File Manual Claim
             </DialogTrigger>
             <DialogContent className="rounded-none border-[#141414] bg-[#E4E3E0] text-[#141414]">
               <DialogHeader>
