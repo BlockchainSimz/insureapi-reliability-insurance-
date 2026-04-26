@@ -90,7 +90,7 @@ async function startServer() {
       latency: 45,
       lastChecked: new Date().toISOString(),
       reliabilityScore: 99.8,
-      fallbackUrl: "https://backup-api.stripe.com/health",
+      fallbackUrl: "https://fallback-api.stripe.com/health",
       alertEmail: "",
       history: Array.from({ length: 20 }, (_, i) => ({
         timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
@@ -112,6 +112,22 @@ async function startServer() {
         timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
         latency: i > 15 ? 400 + Math.random() * 100 : 50 + Math.random() * 20,
         status: i > 15 ? "degraded" : "up"
+      }))
+    },
+    {
+      id: "3",
+      name: "New Service",
+      url: "https://new-service.example.com/health",
+      status: "up",
+      latency: 52,
+      lastChecked: new Date().toISOString(),
+      reliabilityScore: 100,
+      fallbackUrl: "https://backup-new-service.example.com/health",
+      alertEmail: "",
+      history: Array.from({ length: 20 }, (_, i) => ({
+        timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
+        latency: 50 + Math.random() * 10,
+        status: "up"
       }))
     }
   ];

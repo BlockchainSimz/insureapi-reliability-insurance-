@@ -3,11 +3,13 @@ import { Monitor } from "../App";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, ComposedChart, Legend, ReferenceLine } from "recharts";
-import { Clock, Globe, ShieldCheck, Zap, AlertTriangle, Brain, Loader2, TrendingUp, ShieldAlert, Activity, CheckCircle2, FileText, ThumbsUp, ThumbsDown, HelpCircle, Mail, Bell, Save } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, ComposedChart, Legend, ReferenceLine, Bar, BarChart, Cell } from "recharts";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Clock, Globe, ShieldCheck, Zap, AlertTriangle, Brain, Loader2, TrendingUp, ShieldAlert, Activity, CheckCircle2, FileText, ThumbsUp, ThumbsDown, HelpCircle, Mail, Bell, Save, Shield, BarChart3 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { predictOutage } from "../lib/gemini";
 import { motion, AnimatePresence } from "motion/react";
@@ -16,9 +18,10 @@ interface MonitorDetailProps {
   monitor: Monitor;
   onTriggerFallback?: (id: string) => Promise<void>;
   onCheckHealth?: (id: string) => Promise<any>;
+  onUpdateRules?: (id: string, rules: Partial<Monitor>) => void;
 }
 
-export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealth }: MonitorDetailProps) {
+export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealth, onUpdateRules }: MonitorDetailProps) {
   const [fallbackStatus, setFallbackStatus] = React.useState<'idle' | 'loading' | 'success'>('idle');
   const [prediction, setPrediction] = React.useState<any>(null);
   const [isPredicting, setIsPredicting] = React.useState(false);
@@ -107,6 +110,11 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
       toast.error("Failed to perform health check");
     } finally {
       setIsChecking(false);
+      // Auto-fallback logic
+      if (healthResult && !healthResult.ok && monitor.autoFallbackEnabled && fallbackStatus === 'idle') {
+        toast.info("Autonomous failover triggered by Auto-Fallback policy");
+        handleFallback();
+      }
     }
   };
 
@@ -189,7 +197,22 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
   const upChecks = monitor.history.filter(h => h.status === 'up').length;
   const uptimePercentage = totalChecks > 0 ? ((upChecks / totalChecks) * 100).toFixed(2) : "100.00";
 
-  const latencyThreshold = 250; // ms SLA threshold
+  const [latencyThreshold, setLatencyThreshold] = React.useState(monitor.latencyThreshold || 250);
+  
+  React.useEffect(() => {
+    setLatencyThreshold(monitor.latencyThreshold || 250);
+  }, [monitor.id, monitor.latencyThreshold]);
+
+  const handleLatencyThresholdChange = (val: number) => {
+    setLatencyThreshold(val);
+    if (onUpdateRules) {
+      onUpdateRules(monitor.id, { latencyThreshold: val });
+    }
+  };
+
+  const uptimeTargetValue = monitor.uptimeTarget || 99.9; // % SLA threshold
+  const errorRateThresholdValue = monitor.errorRateThreshold || 5; // % SLA threshold
+  const adherenceTargetValue = 99.5; // % Latency Adherence SLA target
   const adherentChecks = monitor.history.filter(h => h.latency <= latencyThreshold).length;
   const latencyAdherence = totalChecks > 0 ? ((adherentChecks / totalChecks) * 100).toFixed(2) : "100.00";
 
@@ -235,6 +258,7 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
         date: format(day, "MMM dd"),
         uptime: Number(((dayUp / dayTotal) * 100).toFixed(2)),
         adherence: Number(((dayAdherent / dayTotal) * 100).toFixed(2)),
+        errorRate: Number((((dayTotal - dayUp) / dayTotal) * 100).toFixed(2)),
         hasData: true
       };
     });
@@ -246,12 +270,48 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
     
     const sumUptime = dataWithHistory.reduce((acc, d) => acc + d.uptime, 0);
     const sumAdherence = dataWithHistory.reduce((acc, d) => acc + d.adherence, 0);
+    const sumErrorRate = dataWithHistory.reduce((acc, d) => acc + d.errorRate, 0);
     
     return {
       avgUptime: (sumUptime / dataWithHistory.length).toFixed(2),
-      avgAdherence: (sumAdherence / dataWithHistory.length).toFixed(2)
+      avgAdherence: (sumAdherence / dataWithHistory.length).toFixed(2),
+      avgErrorRate: (sumErrorRate / dataWithHistory.length).toFixed(2)
     };
   }, [sevenDayTrend]);
+
+  const downtimeIncidents = React.useMemo(() => {
+    const incidents: { start: string; end: string | null; duration: number | null }[] = [];
+    let currentIncident: { start: string; end: string | null; duration: number | null } | null = null;
+
+    const sortedHistory = [...monitor.history].sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    sortedHistory.forEach((h) => {
+      const isDown = h.status !== 'up';
+      
+      if (isDown) {
+        if (!currentIncident) {
+          currentIncident = { start: h.timestamp, end: null, duration: null };
+        }
+      } else {
+        if (currentIncident) {
+          currentIncident.end = h.timestamp;
+          const start = new Date(currentIncident.start).getTime();
+          const end = new Date(h.timestamp).getTime();
+          currentIncident.duration = Math.max(1, Math.floor((end - start) / 60000));
+          incidents.push(currentIncident);
+          currentIncident = null;
+        }
+      }
+    });
+
+    if (currentIncident) {
+      incidents.push(currentIncident);
+    }
+
+    return incidents.reverse();
+  }, [monitor.history]);
 
   return (
     <div className="space-y-6 relative">
@@ -402,6 +462,15 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
               )}
               {isPredicting ? "Analyzing..." : "Run AI Scan"}
             </Button>
+            <Button 
+              onClick={() => handleManualNotify('DOWNTIME', monitor.latency)}
+              variant="outline"
+              size="sm"
+              className="rounded-none border-red-600 text-red-600 text-[9px] uppercase tracking-widest h-7 px-3 hover:bg-red-600 hover:text-white transition-colors ml-2 font-bold"
+            >
+              <ShieldAlert className="w-3 h-3 mr-2" />
+              Trigger Downtime Alert
+            </Button>
           </div>
           <p className="text-xs font-mono opacity-60 flex items-center gap-2">
             <Globe className="w-3 h-3" /> {monitor.url}
@@ -414,7 +483,24 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <Tabs defaultValue="overview" className="w-full">
+        <TabsList className="bg-transparent border-b border-[#141414]/10 w-full justify-start rounded-none h-auto p-0 gap-6 mb-6">
+          <TabsTrigger 
+            value="overview" 
+            className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-2 text-[10px] uppercase tracking-widest font-bold"
+          >
+            Performance Overview
+          </TabsTrigger>
+          <TabsTrigger 
+            value="details" 
+            className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-2 text-[10px] uppercase tracking-widest font-bold"
+          >
+            Configuration Details
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-6 mt-0">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="border-[#141414] rounded-none shadow-none bg-transparent">
           <CardContent className="p-4 flex items-center gap-4">
             <div className="p-2 bg-[#141414] text-[#E4E3E0]">
@@ -459,13 +545,7 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
         </CardHeader>
         <CardContent className="p-6 h-[300px]">
           <ResponsiveContainer width="100%" height="100%" key={`chart-${monitor.id}`}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#141414" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#141414" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
+            <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#141414" opacity={0.1} vertical={false} />
               <XAxis 
                 dataKey="timestamp" 
@@ -493,16 +573,18 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                   fontSize: '10px'
                 }}
                 itemStyle={{ color: '#E4E3E0' }}
+                cursor={{ stroke: '#141414', strokeWidth: 1, strokeDasharray: '4 4' }}
               />
-              <Area 
-                type="stepAfter" 
+              <Line 
+                type="monotone" 
                 dataKey="latency" 
                 stroke="#141414" 
-                strokeWidth={2}
-                fillOpacity={1} 
-                fill="url(#colorLatency)" 
+                strokeWidth={3}
+                dot={{ r: 2, fill: '#141414', strokeWidth: 0 }}
+                activeDot={{ r: 5, fill: '#141414', stroke: '#E4E3E0', strokeWidth: 2 }}
+                animationDuration={1500}
               />
-            </AreaChart>
+            </LineChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
@@ -531,12 +613,12 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
           </CardHeader>
           <CardContent className="p-4">
             <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div className="border-l-2 border-[#141414] pl-3 relative group">
                   <p className="text-[9px] uppercase tracking-widest opacity-60 italic font-serif">7-Day Avg Uptime</p>
                   <p className="text-2xl font-bold font-mono tracking-tighter">{sevenDayStats.avgUptime}%</p>
-                  <p className="text-[8px] opacity-40 uppercase tracking-tighter">Target: 99.99%</p>
-                  {Number(sevenDayStats.avgUptime) < 99.99 && (
+                  <p className="text-[8px] opacity-40 uppercase tracking-tighter">Target: {uptimeTargetValue}%</p>
+                  {Number(sevenDayStats.avgUptime) < uptimeTargetValue && (
                     <Button 
                       variant="ghost" 
                       size="icon" 
@@ -551,7 +633,19 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                 <div className="border-l-2 border-[#141414] pl-3 relative group">
                   <p className="text-[9px] uppercase tracking-widest opacity-60 italic font-serif">7-Day Avg Latency</p>
                   <p className="text-2xl font-bold font-mono tracking-tighter">{sevenDayStats.avgAdherence}%</p>
-                  <p className="text-[8px] opacity-40 uppercase tracking-tighter">Threshold: &lt;{latencyThreshold}ms</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <p className="text-[8px] opacity-40 uppercase tracking-tighter">Threshold: </p>
+                    <div className="flex items-center gap-1 border-b border-[#141414]/20">
+                      <span className="text-[8px] opacity-40 uppercase tracking-tighter">&lt;</span>
+                      <Input 
+                        type="number" 
+                        value={latencyThreshold} 
+                        onChange={(e) => handleLatencyThresholdChange(Number(e.target.value))}
+                        className="w-10 h-4 p-0 border-none bg-transparent text-[8px] font-mono focus-visible:ring-0"
+                      />
+                      <span className="text-[8px] opacity-40 uppercase tracking-tighter">ms</span>
+                    </div>
+                  </div>
                   {Number(sevenDayStats.avgAdherence) < 100 && (
                     <Button 
                       variant="ghost" 
@@ -559,6 +653,22 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                       className="absolute top-0 right-0 h-6 w-6 rounded-none opacity-0 group-hover:opacity-100 transition-opacity"
                       onClick={() => handleManualNotify("LATENCY_SLA_BREACH", Number(monitor.latency))}
                       title="Notify of Latency Breach"
+                    >
+                      <Mail className="w-3 h-3" />
+                    </Button>
+                  )}
+                </div>
+                <div className="border-l-2 border-[#141414] pl-3 relative group">
+                  <p className="text-[9px] uppercase tracking-widest opacity-60 italic font-serif">7-Day Avg Error Rate</p>
+                  <p className="text-2xl font-bold font-mono tracking-tighter">{sevenDayStats.avgErrorRate}%</p>
+                  <p className="text-[8px] opacity-40 uppercase tracking-tighter">Limit: {errorRateThresholdValue}%</p>
+                  {Number(sevenDayStats.avgErrorRate) > errorRateThresholdValue && (
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="absolute top-0 right-0 h-6 w-6 rounded-none opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={() => handleManualNotify("ERROR_RATE_SLA_BREACH", 0)}
+                      title="Notify of Error Rate Breach"
                     >
                       <Mail className="w-3 h-3" />
                     </Button>
@@ -572,19 +682,16 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                   <div className="flex gap-3 text-[8px] font-mono opacity-60">
                     <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#141414]" /> Uptime</span>
                     <span className="flex items-center gap-1"><span className="w-2 h-[2px] border-b border-dashed border-[#141414]" /> Latency</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#facc15]" /> Error Rate</span>
                   </div>
                 </div>
-                <div className="h-[200px] w-full mt-4">
+                <div className="h-[250px] w-full mt-4">
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={sevenDayTrend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                       <defs>
                         <linearGradient id="colorUptime" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#141414" stopOpacity={0.15}/>
                           <stop offset="95%" stopColor="#141414" stopOpacity={0}/>
-                        </linearGradient>
-                        <linearGradient id="colorAdherence" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#e11d48" stopOpacity={0.1}/>
-                          <stop offset="95%" stopColor="#e11d48" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#141414" opacity={0.05} vertical={false} />
@@ -597,12 +704,23 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                         tick={{ opacity: 0.7, fontWeight: 500 }}
                       />
                       <YAxis 
+                        yAxisId="right"
                         domain={[90, 100]} 
                         fontSize={8} 
                         tickLine={false} 
                         axisLine={false} 
                         tick={{ opacity: 0.5 }}
                         orientation="right"
+                      />
+                      <YAxis 
+                        yAxisId="left"
+                        domain={[0, 20]} 
+                        fontSize={8} 
+                        tickLine={false} 
+                        axisLine={false} 
+                        tick={{ opacity: 0.5 }}
+                        orientation="left"
+                        hide
                       />
                       <Tooltip 
                         contentStyle={{ 
@@ -612,7 +730,8 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                           color: '#E4E3E0',
                           fontFamily: 'monospace',
                           fontSize: '10px',
-                          padding: '10px'
+                          padding: '10px',
+                          zIndex: 100
                         }}
                         itemStyle={{ padding: '2px 0' }}
                         cursor={{ stroke: '#141414', strokeWidth: 1, strokeDasharray: '4 4' }}
@@ -626,22 +745,27 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                           fontSize: '9px', 
                           textTransform: 'uppercase', 
                           letterSpacing: '0.1em',
-                          paddingBottom: '15px',
+                          paddingBottom: '25px',
                           opacity: 0.8
                         }}
                       />
-                      <ReferenceLine y={99.99} stroke="#141414" strokeDasharray="3 3" label={{ position: 'right', value: '99.99%', fontSize: 7, fill: '#141414', opacity: 0.5 }} />
+                      <ReferenceLine yAxisId="right" y={uptimeTargetValue} stroke="#141414" strokeDasharray="3 3" label={{ position: 'top', value: `Uptime SLA (${uptimeTargetValue}%)`, fontSize: 7, fill: '#141414', opacity: 0.5 }} />
+                      <ReferenceLine yAxisId="right" y={adherenceTargetValue} stroke="#e11d48" strokeDasharray="2 2" label={{ position: 'bottom', value: `Latency SLA (${adherenceTargetValue}%)`, fontSize: 7, fill: '#e11d48', opacity: 0.5 }} />
+                      <ReferenceLine yAxisId="left" y={errorRateThresholdValue} stroke="#facc15" strokeDasharray="3 3" label={{ position: 'left', value: `Error Limit (${errorRateThresholdValue}%)`, fontSize: 7, fill: '#facc15', opacity: 0.5 }} />
+                      
                       <Area 
+                        yAxisId="right"
                         type="monotone" 
                         dataKey="uptime" 
                         stroke="#141414" 
                         strokeWidth={2} 
                         fillOpacity={1} 
-                        fill="url(#colorUptime)"
+                        fill="url(#colorUptime)" 
                         name="Uptime %"
                         animationDuration={1500}
                       />
                       <Line 
+                        yAxisId="right"   
                         type="monotone" 
                         dataKey="adherence" 
                         stroke="#e11d48" 
@@ -650,6 +774,14 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                         activeDot={{ r: 4, strokeWidth: 0 }}
                         name="Latency Adherence %"
                         animationDuration={2000}
+                      />
+                      <Bar 
+                        yAxisId="left"
+                        dataKey="errorRate" 
+                        fill="#facc15" 
+                        opacity={0.6}
+                        name="Error Rate %" 
+                        animationDuration={2500}
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -751,6 +883,113 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-[#141414] rounded-none shadow-none bg-transparent">
+          <CardHeader className="border-b border-[#141414] py-3">
+            <CardTitle className="text-[10px] uppercase tracking-widest italic font-serif lowercase flex justify-between items-center">
+              <span>Verified Downtime Events</span>
+              <Badge variant="outline" className="border-[#141414] rounded-none text-[8px] font-mono">INCIDENT-LIST-V1</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[180px] overflow-y-auto font-mono text-[10px]">
+              {downtimeIncidents.length > 0 ? (
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#141414]/20 opacity-40 text-[8px] uppercase tracking-widest">
+                      <th className="p-2 font-normal">Start Time</th>
+                      <th className="p-2 font-normal">End Time</th>
+                      <th className="p-2 font-normal text-right">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {downtimeIncidents.map((incident, i) => (
+                      <tr key={i} className="border-b border-[#141414]/10 hover:bg-[#141414] hover:text-[#E4E3E0] transition-colors group">
+                        <td className="p-2">
+                          {format(new Date(incident.start), "MMM dd, HH:mm")}
+                        </td>
+                        <td className="p-2 opacity-60 group-hover:opacity-100">
+                          {incident.end ? format(new Date(incident.end), "MMM dd, HH:mm") : <Badge variant="destructive" className="h-4 text-[7px] rounded-none">ONGOING</Badge>}
+                        </td>
+                        <td className="p-2 text-right font-bold">
+                          {incident.duration ? `${incident.duration}m` : "--"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="p-8 text-center opacity-40 italic">
+                  No verified downtime events logged in history.
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-[#141414] rounded-none shadow-none bg-[#141414]/5">
+          <CardHeader className="border-b border-[#141414] py-3">
+            <CardTitle className="text-[10px] uppercase tracking-widest flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-3 h-3" /> Downtime Duration Matrix
+              </div>
+              <div className="flex gap-3 text-[8px] font-mono opacity-60 normal-case tracking-normal">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 bg-[#e11d48]" /> Ongoing</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 bg-[#64748b]" /> Resolved</span>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 h-[180px]">
+             {downtimeIncidents.length > 0 ? (
+               <ResponsiveContainer width="100%" height="100%">
+                 <BarChart data={downtimeIncidents.slice().reverse()}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#141414" opacity={0.1} />
+                    <XAxis 
+                      dataKey="start" 
+                      fontSize={8} 
+                      tickFormatter={(val) => format(new Date(val), "HH:mm")}
+                      stroke="#141414"
+                      opacity={0.5}
+                    />
+                    <YAxis 
+                      fontSize={8}
+                      stroke="#141414"
+                      opacity={0.5}
+                      label={{ value: 'MIN', angle: -90, position: 'insideLeft', fontSize: 8 }}
+                    />
+                    <Tooltip 
+                      contentStyle={{ 
+                        backgroundColor: '#141414', 
+                        border: 'none', 
+                        borderRadius: '0px',
+                        color: '#E4E3E0',
+                        fontFamily: 'monospace',
+                        fontSize: '10px'
+                      }}
+                      formatter={(value: any) => [`${value} minutes`, 'Duration']}
+                      labelFormatter={(label) => `Incident: ${format(new Date(label), "MMM dd, HH:mm")}`}
+                    />
+                    <Bar 
+                      dataKey="duration" 
+                      radius={[2, 2, 0, 0]}
+                      animationDuration={1500}
+                    >
+                      {downtimeIncidents.slice().reverse().map((entry, index) => (
+                        <Cell 
+                          key={`cell-${index}`} 
+                          fill={entry.end === null ? "#e11d48" : "#64748b"} 
+                        />
+                      ))}
+                    </Bar>
+                 </BarChart>
+               </ResponsiveContainer>
+             ) : (
+               <div className="h-full flex items-center justify-center opacity-40 italic text-[10px] uppercase tracking-widest text-center">
+                 Insufficient baseline for duration matrix
+               </div>
+             )}
           </CardContent>
         </Card>
       </div>
@@ -992,8 +1231,10 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
           </div>
         </div>
       </Card>
+    </TabsContent>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <TabsContent value="details" className="mt-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card className="border-[#141414] rounded-none shadow-none bg-transparent">
           <CardHeader className="border-b border-[#141414] py-3">
             <CardTitle className="text-[10px] uppercase tracking-widest">Fallback Configuration</CardTitle>
@@ -1113,55 +1354,111 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
           </CardContent>
         </Card>
 
+        {/* Bottom Section: Alerts & Policies */}
+        <Card className="border-[#141414] rounded-none shadow-none bg-transparent">
+          <CardHeader className="border-b border-[#141414] py-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] uppercase tracking-widest flex items-center gap-2">
+              <Shield className="w-3 h-3" /> Active Monitoring Protocols
+            </CardTitle>
+            <Badge variant="outline" className="border-[#141414] rounded-none text-[8px] opacity-40">
+              {monitor.customRules?.length || 0} DEPLOYED
+            </Badge>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y divide-[#141414]/10">
+              {!monitor.customRules || monitor.customRules.length === 0 ? (
+                <div className="p-8 text-center opacity-30 italic text-[10px] uppercase tracking-widest">
+                  No custom protocols active for this endpoint.
+                </div>
+              ) : (
+                monitor.customRules.map((rule) => (
+                  <div key={rule.id} className={cn(
+                    "p-3 flex items-center justify-between",
+                    !rule.enabled && "opacity-40 grayscale"
+                  )}>
+                    <div className="flex items-center gap-3">
+                      <div className="w-6 h-6 bg-[#141414] flex items-center justify-center">
+                        {rule.metric === "latency" ? <Zap className="w-3 h-3 text-[#E4E3E0]" /> : 
+                         rule.metric === "uptime" ? <Shield className="w-3 h-3 text-[#E4E3E0]" /> : 
+                         <Activity className="w-3 h-3 text-[#E4E3E0]" />}
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-tight">
+                          {rule.metric.replace('_', ' ')} • IF {rule.metric === 'uptime' ? 'BELOW' : 'EXCEEDS'} {rule.threshold}{rule.metric === 'latency' ? 'ms' : '%'}
+                        </p>
+                        <p className="text-[8px] opacity-60 uppercase tracking-widest">
+                          EXECUTE: {rule.action.replace('_', ' ')}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={cn(
+                      "rounded-none text-[8px] font-mono",
+                      rule.enabled ? "border-green-500 text-green-600" : "border-[#141414] opacity-40"
+                    )}>
+                      {rule.enabled ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
         <Card className="border-[#141414] rounded-none shadow-none bg-transparent">
           <CardHeader className="border-b border-[#141414] py-3">
             <CardTitle className="text-[10px] uppercase tracking-widest flex items-center gap-2">
-              <Bell className="w-3 h-3" /> Alert & Notification Settings
+              <Mail className="w-3 h-3" /> Alert Email Configuration
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 space-y-4">
             <div className="space-y-2">
-              <label className="text-[9px] uppercase tracking-widest opacity-60 font-bold">Alert Recipient Email</label>
+              <Label className="text-[9px] uppercase tracking-widest opacity-60 font-bold">Primary Alert Recipient</Label>
               <div className="flex gap-2">
-                <input 
+                <Input 
                   type="email"
                   value={alertEmail}
                   onChange={(e) => setAlertEmail(e.target.value)}
                   placeholder="admin@company.com"
-                  className="flex-1 bg-white/5 border border-[#141414]/20 p-2 text-xs font-mono focus:outline-none focus:border-[#141414] rounded-none"
+                  className="flex-1 bg-white/5 border border-[#141414]/20 p-2 text-xs font-mono focus:outline-none focus:border-[#141414] rounded-none h-9"
                 />
                 <Button 
                   size="sm" 
-                  className="rounded-none bg-[#141414] text-[#E4E3E0] hover:bg-[#141414]/90"
+                  className="rounded-none bg-[#141414] text-[#E4E3E0] hover:bg-[#141414]/90 px-4 h-9"
                   onClick={handleSaveAlert}
                   disabled={isSavingAlert}
-                  title="Save Alert Email"
                 >
-                  {isSavingAlert ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                  {isSavingAlert ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <Save className="w-3 h-3 mr-2" />}
+                  Save Configuration
+                </Button>
+              </div>
+              <p className="text-[8px] opacity-40 italic">Automated SLA breach notifications will be dispatched to this verified address.</p>
+            </div>
+            
+            <div className="pt-2 border-t border-[#141414]/10 flex items-center justify-between">
+              <div className="flex gap-2">
+                <Button 
+                  size="sm" 
+                  variant="outline"
+                  className="h-7 text-[8px] rounded-none border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] uppercase tracking-tighter"
+                  onClick={() => handleManualNotify("TEST_ALERT", monitor.latency)}
+                >
+                  <Mail className="w-3 h-3 mr-1.5" /> Send Test Notify
                 </Button>
                 <Button 
                   size="sm" 
                   variant="outline"
-                  className="rounded-none border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
-                  onClick={() => handleManualNotify("TEST_ALERT", monitor.latency)}
-                  title="Send Test Notification"
+                  className="h-7 text-[8px] rounded-none border-red-600/50 text-red-600 hover:bg-red-600 hover:text-white uppercase tracking-tighter"
+                  onClick={() => handleManualNotify("DOWNTIME", 0)}
                 >
-                  <Mail className="w-3 h-3" />
+                  <AlertTriangle className="w-3 h-3 mr-1.5" /> Trigger Alert
                 </Button>
               </div>
-              <p className="text-[8px] opacity-40 italic">Automated alerts will be dispatched upon detection of SLA breaches.</p>
-            </div>
-            
-            <div className="pt-2 border-t border-[#141414]/10">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] uppercase tracking-widest font-bold">Notification Status</span>
-                <Badge variant="outline" className={cn(
-                  "rounded-none text-[8px] font-mono",
-                  monitor.alertEmail ? "border-green-500 text-green-600" : "border-gray-400 opacity-40"
-                )}>
-                  {monitor.alertEmail ? "ACTIVE" : "INACTIVE"}
-                </Badge>
-              </div>
+              <Badge variant="outline" className={cn(
+                "rounded-none text-[8px] font-mono",
+                monitor.alertEmail ? "border-green-500 text-green-600" : "border-gray-400 opacity-40"
+              )}>
+                STATUS: {monitor.alertEmail ? "ACTIVE" : "INACTIVE"}
+              </Badge>
             </div>
           </CardContent>
         </Card>
@@ -1185,6 +1482,8 @@ export default function MonitorDetail({ monitor, onTriggerFallback, onCheckHealt
           </CardContent>
         </Card>
       </div>
-    </div>
+    </TabsContent>
+  </Tabs>
+</div>
   );
 }

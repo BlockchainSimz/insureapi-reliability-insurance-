@@ -1,7 +1,7 @@
 import React from "react";
 import { Monitor } from "../App";
 import { cn } from "@/lib/utils";
-import { ChevronRight, Globe, AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react";
+import { ChevronRight, Globe, AlertCircle, CheckCircle2, AlertTriangle, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { motion } from "motion/react";
@@ -11,9 +11,34 @@ interface MonitorListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onTriggerFallback?: (id: string) => Promise<void>;
+  onCheckHealth?: (id: string) => Promise<any>;
 }
 
-export default function MonitorList({ monitors, selectedId, onSelect, onTriggerFallback }: MonitorListProps) {
+export default function MonitorList({ monitors, selectedId, onSelect, onTriggerFallback, onCheckHealth }: MonitorListProps) {
+  const [checkingId, setCheckingId] = React.useState<string | null>(null);
+
+  const handleCheck = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (!onCheckHealth) return;
+    
+    setCheckingId(id);
+    try {
+      const result = await onCheckHealth(id);
+      if (result.ok) {
+        toast.success(`Health check passed for ${monitors.find(m => m.id === id)?.name}`, {
+          description: `Latency: ${result.latency}ms | Status: ${result.status}`
+        });
+      } else {
+        toast.error(`Health check failed for ${monitors.find(m => m.id === id)?.name}`, {
+          description: `Status: ${result.status}`
+        });
+      }
+    } catch (error) {
+      toast.error("Failed to perform health check");
+    } finally {
+      setCheckingId(null);
+    }
+  };
   return (
     <div className="divide-y divide-[#141414]">
       {monitors.map((monitor) => (
@@ -91,6 +116,20 @@ export default function MonitorList({ monitors, selectedId, onSelect, onTriggerF
           </div>
           
           <div className="flex items-center gap-4">
+            <Button
+              size="icon"
+              variant="ghost"
+              title="Perform Quick Health Check"
+              disabled={checkingId === monitor.id}
+              className={cn(
+                "w-8 h-8 rounded-none transition-all",
+                selectedId === monitor.id ? "text-[#E4E3E0] hover:bg-[#E4E3E0] hover:text-[#141414]" : "text-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]",
+                checkingId === monitor.id && "animate-pulse"
+              )}
+              onClick={(e) => handleCheck(e, monitor.id)}
+            >
+              <Activity className={cn("w-4 h-4", checkingId === monitor.id && "animate-spin")} />
+            </Button>
             <Button
               size="icon"
               variant="ghost"

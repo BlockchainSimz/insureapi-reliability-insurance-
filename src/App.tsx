@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap } from "lucide-react";
+import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap, HelpCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -11,6 +11,8 @@ import MonitorList from "./components/MonitorList";
 import MonitorDetail from "./components/MonitorDetail";
 import AIInsights from "./components/AIInsights";
 import InsuranceClaims from "./components/InsuranceClaims";
+import MonitoringRules from "./components/MonitoringRules";
+import Onboarding from "./components/Onboarding";
 
 export interface Monitor {
   id: string;
@@ -23,18 +25,61 @@ export interface Monitor {
   fallbackUrl: string;
   alertEmail?: string;
   history: { timestamp: string; latency: number; status: string }[];
+  // Custom Rules
+  latencyThreshold?: number;
+  latencyAction?: string;
+  latencyEnabled?: boolean;
+  uptimeTarget?: number;
+  errorRateThreshold?: number;
+  errorRateAction?: string;
+  errorRateEnabled?: boolean;
+  downtimeThreshold?: number;
+  downtimeAction?: string;
+  downtimeEnabled?: boolean;
+  autoFallbackEnabled?: boolean;
+  slackNotificationsEnabled?: boolean;
+  customRules?: {
+    id: string;
+    metric: string;
+    threshold: number;
+    action: string;
+    enabled: boolean;
+  }[];
 }
+
+import SystemManual from "./components/SystemManual";
 
 export default function App() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [selectedMonitorId, setSelectedMonitorId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
+    const hasSeenOnboarding = localStorage.getItem("insureapi_onboarding_complete");
+    if (!hasSeenOnboarding) {
+      setShowOnboarding(true);
+    }
     fetchMonitors();
     const interval = setInterval(fetchMonitors, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleGlobalHealthCheck = async () => {
+    toast.promise(
+      Promise.all(monitors.map(m => handleCheckHealth(m.id))),
+      {
+        loading: 'Executing System-Wide Performance Audit...',
+        success: 'Global reliability scan complete.',
+        error: 'Global scan encountered issues.',
+      }
+    );
+  };
+
+  const handleOnboardingComplete = () => {
+    localStorage.setItem("insureapi_onboarding_complete", "true");
+    setShowOnboarding(false);
+  };
 
   const fetchMonitors = async () => {
     try {
@@ -71,12 +116,19 @@ export default function App() {
     }
   };
 
+  const handleUpdateRules = (id: string, rules: Partial<Monitor>) => {
+    setMonitors(prev => prev.map(m => m.id === id ? { ...m, ...rules } : m));
+  };
+
   const selectedMonitor = monitors.find(m => m.id === selectedMonitorId);
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] text-[#141414] selection:bg-[#141414] selection:text-[#E4E3E0]">
       <Toaster position="top-right" />
       
+      <AnimatePresence>
+        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+      </AnimatePresence>
       {/* Header */}
       <header className="border-b border-[#141414] p-6 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-50">
         <div className="flex items-center gap-3">
@@ -97,6 +149,24 @@ export default function App() {
               <span className="text-xs font-mono uppercase">All Systems Operational</span>
             </div>
           </div>
+          <Button 
+            variant="outline"
+            size="sm"
+            className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-4 hidden xl:flex text-[10px] items-center gap-2"
+            onClick={handleGlobalHealthCheck}
+          >
+            <RefreshCw className="w-3 h-3" />
+            PERFORMANCE AUDIT
+          </Button>
+          <Button 
+            variant="outline" 
+            size="icon" 
+            className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none shrink-0"
+            onClick={() => setShowOnboarding(true)}
+            title="System Guide"
+          >
+            <HelpCircle className="w-4 h-4" />
+          </Button>
           <Button variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
             <Plus className="w-4 h-4 mr-2" /> NEW MONITOR
           </Button>
@@ -123,6 +193,7 @@ export default function App() {
                 selectedId={selectedMonitorId} 
                 onSelect={setSelectedMonitorId} 
                 onTriggerFallback={handleTriggerFallback}
+                onCheckHealth={handleCheckHealth}
               />
             </CardContent>
           </Card>
@@ -153,7 +224,8 @@ export default function App() {
               <TabsTrigger value="overview" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">Overview</TabsTrigger>
               <TabsTrigger value="ai-insights" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">AI Insights</TabsTrigger>
               <TabsTrigger value="insurance" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">Insurance & Claims</TabsTrigger>
-              <TabsTrigger value="settings" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">Settings</TabsTrigger>
+              <TabsTrigger value="rules" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">Monitoring Rules</TabsTrigger>
+              <TabsTrigger value="manual" className="rounded-none border-b-2 border-transparent data-[state=active]:border-[#141414] data-[state=active]:bg-transparent px-0 py-3 text-xs uppercase tracking-widest font-bold">System Manual</TabsTrigger>
             </TabsList>
 
             <AnimatePresence mode="wait">
@@ -168,6 +240,7 @@ export default function App() {
                       monitor={selectedMonitor} 
                       onTriggerFallback={handleTriggerFallback}
                       onCheckHealth={handleCheckHealth}
+                      onUpdateRules={handleUpdateRules}
                     />
                   ) : (
                     <div className="h-[500px] border border-dashed border-[#141414] flex flex-col items-center justify-center gap-4 opacity-40">
@@ -185,14 +258,31 @@ export default function App() {
               <TabsContent key="insurance" value="insurance" className="mt-6">
                 <InsuranceClaims monitors={monitors} />
               </TabsContent>
+
+              <TabsContent key="rules" value="rules" className="mt-6">
+                <MonitoringRules monitor={selectedMonitor} onUpdateRules={handleUpdateRules} />
+              </TabsContent>
+
+              <TabsContent key="manual" value="manual" className="mt-6">
+                <SystemManual />
+              </TabsContent>
             </AnimatePresence>
           </Tabs>
         </div>
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[#141414] p-6 mt-12 flex justify-between items-center opacity-40">
-        <p className="text-[10px] uppercase tracking-widest">© 2026 INSUREAPI SYSTEMS INC.</p>
+      <footer className="border-t border-[#141414] p-6 mt-12 flex flex-col md:flex-row justify-between items-center gap-4 opacity-40">
+        <div className="flex flex-col md:flex-row gap-6 items-center">
+          <p className="text-[10px] uppercase tracking-widest">© 2026 INSUREAPI SYSTEMS INC.</p>
+          <Button 
+            variant="link" 
+            className="p-0 h-auto text-[10px] uppercase tracking-widest text-inherit hover:opacity-100"
+            onClick={() => setShowOnboarding(true)}
+          >
+            Run System Initialization
+          </Button>
+        </div>
         <div className="flex gap-6">
           <p className="text-[10px] uppercase tracking-widest">API v2.4.1</p>
           <p className="text-[10px] uppercase tracking-widest">SECURE ENCRYPTION ACTIVE</p>
