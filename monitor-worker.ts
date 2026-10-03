@@ -4,7 +4,7 @@ import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js
 import { classifyCheck } from "./src/monitor/classification.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 const ONCE = process.argv.includes("--once");
 const WORKER_INTERVAL_MS = Number(process.env.MONITOR_WORKER_INTERVAL_MS || 10000);
@@ -24,21 +24,17 @@ type Monitor = {
   id: string; url: string; enabled: boolean; check_interval_seconds: number;
   timeout_ms: number; expected_status_min: number; expected_status_max: number;
   latency_threshold_ms: number; failure_threshold: number; recovery_threshold: number;
-  status: string;
-  alert_email: string | null;
-  alert_cooldown_minutes: number;
-  fallback_url: string | null;
-  failover_enabled: boolean;
-  failover_trigger_count: number;
+  status: string; alert_email: string | null; alert_cooldown_minutes: number;
+  fallback_url: string | null; failover_enabled: boolean; failover_trigger_count: number;
 };
 
 let running = false;
 
 async function db(table: string, init: RequestInit = {}) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error("Worker persistence is not configured");
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) throw new Error("Worker requires SUPABASE_SERVICE_ROLE_KEY");
   const headers = new Headers(init.headers);
-  headers.set("apikey", SUPABASE_KEY);
-  headers.set("Authorization", "Bearer " + SUPABASE_KEY);
+  headers.set("apikey", SUPABASE_SERVICE_ROLE_KEY);
+  headers.set("Authorization", "Bearer " + SUPABASE_SERVICE_ROLE_KEY);
   headers.set("Content-Type", "application/json");
   const res = await fetch(SUPABASE_URL + "/rest/v1/" + table, { ...init, headers });
   const body = await res.text();
@@ -48,34 +44,17 @@ async function db(table: string, init: RequestInit = {}) {
 
 async function checkMonitor(m: Monitor) {
   const started = Date.now();
-  let statusCode: number | null = null;
-  let latency = 0;
-  let ok = false;
-  let httpHealthy = false;
-  let errorCode: string | null = null;
-  let errorMessage: string | null = null;
-
+  let statusCode: number | null = null, latency = 0, ok = false, httpHealthy = false;
+  let errorCode: string | null = null, errorMessage: string | null = null;
   try {
     const target = await resolvePublicHttpTarget(m.url);
     const response = await axios.get(target.url, {
       timeout: Math.min(60000, Math.max(500, m.timeout_ms || 5000)),
-      maxRedirects: 0,
-      validateStatus: () => true,
-      responseType: "stream",
-      ...pinnedAgents(target)
+      maxRedirects: 0, validateStatus: () => true, responseType: "stream", ...pinnedAgents(target)
     });
-    latency = Date.now() - started;
-    statusCode = response.status;
-    const classification = classifyCheck(
-      statusCode,
-      latency,
-      m.expected_status_min,
-      m.expected_status_max,
-      m.latency_threshold_ms || 250
-    );
-    httpHealthy = classification.httpHealthy;
-    ok = classification.ok;
-    errorCode = classification.errorCode;
+    latency = Date.now() - started; statusCode = response.status;
+    const classification = classifyCheck(statusCode, latency, m.expected_status_min, m.expected_status_max, m.latency_threshold_ms || 250);
+    httpHealthy = classification.httpHealthy; ok = classification.ok; errorCode = classification.errorCode;
     response.data.destroy();
   } catch (error: any) {
     latency = Date.now() - started;
@@ -83,25 +62,15 @@ async function checkMonitor(m: Monitor) {
     errorMessage = error instanceof Error ? error.message.slice(0, 500) : "Check failed";
   }
 
-  await db("monitor_checks", {
-    method: "POST",
-    headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({
-      monitor_id: m.id, checked_at: new Date().toISOString(), status_code: statusCode,
-      latency_ms: latency, ok, error_code: errorCode, error_message: errorMessage
-    })
-  });
+  await db("monitor_checks", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+    monitor_id: m.id, checked_at: new Date().toISOString(), status_code: statusCode,
+    latency_ms: latency, ok, error_code: errorCode, error_message: errorMessage
+  }) });
 
-  const recent = await db(
-    "monitor_checks?monitor_id=eq." + encodeURIComponent(m.id) +
-    "&order=checked_at.desc&limit=" + Math.max(m.failure_threshold, m.recovery_threshold, 20)
-  );
+  const recent = await db("monitor_checks?monitor_id=eq." + encodeURIComponent(m.id) + "&order=checked_at.desc&limit=" + Math.max(m.failure_threshold, m.recovery_threshold, 20));
   const failures = recent.slice(0, m.failure_threshold).filter((r: any) => !r.ok).length;
   const recoveries = recent.slice(0, m.recovery_threshold).filter((r: any) => r.ok).length;
-
-  const incidents = await db(
-    "monitor_incidents?monitor_id=eq." + encodeURIComponent(m.id) + "&status=eq.open&order=started_at.desc&limit=1"
-  );
+  const incidents = await db("monitor_incidents?monitor_id=eq." + encodeURIComponent(m.id) + "&status=eq.open&order=started_at.desc&limit=1");
   const open = incidents[0];
 
   if (!ok && !open && failures >= m.failure_threshold) {
@@ -113,26 +82,32 @@ async function checkMonitor(m: Monitor) {
       try {
         const fallbackResponse = await axios.get(fallback.url, { timeout: 5000, maxRedirects: 0, validateStatus: () => true, ...pinnedAgents(fallback) });
         const healthy = fallbackResponse.status >= 200 && fallbackResponse.status < 300;
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url, status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(), error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status }) });
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+          monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url,
+          status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(),
+          error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status
+        }) });
         if (healthy) await queueAlert(m, incidentId, "failover_triggered");
       } catch (error) {
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url, status: "failed", completed_at: new Date().toISOString(), error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed" }) });
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+          monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url,
+          status: "failed", completed_at: new Date().toISOString(),
+          error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed"
+        }) });
       }
     }
   } else if (ok && open && recoveries >= m.recovery_threshold) {
-    await db("monitor_incidents?id=eq." + encodeURIComponent(open.id), {
-      method: "PATCH", headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ status: "resolved", resolved_at: new Date().toISOString(), recovery_count: recoveries })
-    });
+    await db("monitor_incidents?id=eq." + encodeURIComponent(open.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+      status: "resolved", resolved_at: new Date().toISOString(), recovery_count: recoveries
+    }) });
     await queueAlert(m, open.id, "incident_resolved");
   }
 
   await updateReliability(m);
   const status = !httpHealthy ? "down" : latency > m.latency_threshold_ms ? "degraded" : "up";
-  await db("monitors?id=eq." + encodeURIComponent(m.id), {
-    method: "PATCH", headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ status, latency_ms: latency, last_checked_at: new Date().toISOString() })
-  });
+  await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+    status, latency_ms: latency, last_checked_at: new Date().toISOString()
+  }) });
 }
 
 async function queueAlert(m: Monitor, incidentId: string | null, alertType: "incident_opened" | "incident_resolved" | "failover_triggered") {
@@ -140,7 +115,9 @@ async function queueAlert(m: Monitor, incidentId: string | null, alertType: "inc
   const cutoff = new Date(Date.now() - Math.max(1, m.alert_cooldown_minutes || 30) * 60000).toISOString();
   const existing = await db("monitor_alerts?monitor_id=eq." + encodeURIComponent(m.id) + "&alert_type=eq." + encodeURIComponent(alertType) + "&created_at=gte." + encodeURIComponent(cutoff) + "&limit=1");
   if (existing.length) return;
-  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email, next_attempt_at: new Date().toISOString() }) });
+  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+    monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email, next_attempt_at: new Date().toISOString()
+  }) });
 }
 
 async function dispatchAlerts() {
@@ -150,18 +127,16 @@ async function dispatchAlerts() {
   for (const alert of alerts) {
     try {
       await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
-      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null }) });
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+        status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null
+      }) });
     } catch (error) {
       const attempts = (alert.attempts || 0) + 1;
-      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), {
-        method: "PATCH", headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({
-          status: attempts >= ALERT_MAX_ATTEMPTS ? "failed" : "pending",
-          attempts,
-          next_attempt_at: new Date(Date.now() + ALERT_RETRY_DELAY_MS * attempts).toISOString(),
-          last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed"
-        })
-      });
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+        status: attempts >= ALERT_MAX_ATTEMPTS ? "failed" : "pending",
+        attempts, next_attempt_at: new Date(Date.now() + ALERT_RETRY_DELAY_MS * attempts).toISOString(),
+        last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed"
+      }) });
     }
   }
 }
@@ -185,7 +160,6 @@ async function tick() {
     for (let i = 0; i < monitors.length; i += CONCURRENCY) {
       const batch = monitors.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(async m => {
-        // Avoid checking more often than the monitor's configured interval.
         if (m.check_interval_seconds > 0) {
           const last = await db("monitor_checks?monitor_id=eq." + encodeURIComponent(m.id) + "&select=checked_at&order=checked_at.desc&limit=1");
           if (last[0] && now - Date.parse(last[0].checked_at) < m.check_interval_seconds * 1000) return;
@@ -202,8 +176,8 @@ async function tick() {
 }
 
 export function startMonitorWorker() {
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.warn("[monitor-worker] disabled: Supabase persistence credentials are not configured");
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn("[monitor-worker] disabled: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
     return () => {};
   }
   void tick();
