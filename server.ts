@@ -5,7 +5,6 @@ import { URL } from "url";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
-import { startMonitorWorker } from "./monitor-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -232,11 +231,11 @@ async function startServer() {
   });
 
   app.post("/api/monitors/:id/fallback", requireSupabase, async (_req, res) => {
-    res.status(501).json({ error: "Automated failover is intentionally deferred to Phase 3" });
+    res.status(501).json({ error: "Traffic failover requires a deployment-specific routing integration; Phase 3 only verifies and records fallback health." });
   });
 
   app.post("/api/monitors/:id/notify", requireSupabase, async (_req, res) => {
-    res.status(501).json({ error: "Production notifications are intentionally deferred to Phase 3" });
+    res.status(501).json({ error: "Notifications are handled by the Phase 3 worker alert outbox and SMTP dispatcher." });
   });
 
   if (NODE_ENV !== "production") {
@@ -255,7 +254,6 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log("InsureAPI server listening on port " + PORT);
-    if (NODE_ENV === "production") startMonitorWorker();
   });
 }
 
