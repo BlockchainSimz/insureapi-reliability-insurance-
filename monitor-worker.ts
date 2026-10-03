@@ -1,4 +1,5 @@
 import axios from "axios";
+import nodemailer from "nodemailer";
 import dns from "dns/promises";
 import { URL } from "url";
 
@@ -8,6 +9,14 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABA
 const ONCE = process.argv.includes("--once");
 const WORKER_INTERVAL_MS = Number(process.env.MONITOR_WORKER_INTERVAL_MS || 10000);
 const CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.MONITOR_WORKER_CONCURRENCY || 5)));
+const SMTP_HOST = process.env.SMTP_HOST || "";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+const mailer = SMTP_HOST && SMTP_USER && SMTP_PASS
+  ? nodemailer.createTransport({ host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465, auth: { user: SMTP_USER, pass: SMTP_PASS } })
+  : null;
 
 type Monitor = {
   id: string; url: string; enabled: boolean; check_interval_seconds: number;
@@ -98,11 +107,20 @@ async function checkMonitor(m: Monitor) {
   const open = incidents[0];
 
   if (!ok && !open && failures >= m.failure_threshold) {
-    await db("monitor_incidents", {
-      method: "POST",
-      headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ monitor_id: m.id, reason: errorCode || "CHECK_FAILED", failure_count: failures })
-    });
+    const created = await db("monitor_incidents", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ monitor_id: m.id, reason: errorCode || "CHECK_FAILED", failure_count: failures }) });
+    const incidentId = created?.[0]?.id || null;
+    await queueAlert(m, incidentId, "incident_opened");
+    if (m.failover_enabled && m.fallback_url && failures >= m.failover_trigger_count) {
+      const fallback = await safeUrl(m.fallback_url);
+      try {
+        const fallbackResponse = await axios.get(fallback, { timeout: 5000, maxRedirects: 0, validateStatus: () => true });
+        const healthy = fallbackResponse.status >= 200 && fallbackResponse.status < 300;
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback, status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(), error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status }) });
+        if (healthy) await queueAlert(m, incidentId, "failover_triggered");
+      } catch (error) {
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback, status: "failed", completed_at: new Date().toISOString(), error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed" }) });
+      }
+    }
   } else if (ok && open && recoveries >= m.recovery_threshold) {
     await db("monitor_incidents?id=eq." + encodeURIComponent(open.id), {
       method: "PATCH", headers: { Prefer: "return=minimal" },
@@ -117,8 +135,35 @@ async function checkMonitor(m: Monitor) {
   });
 }
 
+async function queueAlert(m: Monitor, incidentId: string | null, alertType: "incident_opened" | "incident_resolved" | "failover_triggered") {
+  if (!m.alert_email) return;
+  const cutoff = new Date(Date.now() - Math.max(1, m.alert_cooldown_minutes || 30) * 60000).toISOString();
+  const existing = await db("monitor_alerts?monitor_id=eq." + encodeURIComponent(m.id) + "&alert_type=eq." + encodeURIComponent(alertType) + "&created_at=gte." + encodeURIComponent(cutoff) + "&limit=1");
+  if (existing.length) return;
+  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email }) });
+}
+
+async function dispatchAlerts() {
+  if (!mailer) return;
+  const alerts = await db("monitor_alerts?status=eq.pending&order=created_at.asc&limit=10");
+  for (const alert of alerts) {
+    try {
+      await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null }) });
+    } catch (error) {
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "failed", attempts: (alert.attempts || 0) + 1, last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed" }) });
+    }
+  }
+}
+
+async function updateReliability(m: Monitor) {
+  const result = await db("rpc/calculate_monitor_reliability", { method: "POST", body: JSON.stringify({ p_monitor_id: m.id, p_window_hours: 24 }) });
+  const score = Number(result);
+  if (Number.isFinite(score)) await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ reliability_score: score }) });
+}
+
 async function loadMonitors(): Promise<Monitor[]> {
-  return db("monitors?enabled=eq.true&select=id,url,enabled,check_interval_seconds,timeout_ms,expected_status_min,expected_status_max,latency_threshold_ms,failure_threshold,recovery_threshold,status");
+  return db("monitors?enabled=eq.true&select=id,url,enabled,check_interval_seconds,timeout_ms,expected_status_min,expected_status_max,latency_threshold_ms,failure_threshold,recovery_threshold,status,alert_email,alert_cooldown_minutes,fallback_url,failover_enabled,failover_trigger_count");
 }
 
 async function tick() {
