@@ -1,7 +1,7 @@
 import axios from "axios";
 import nodemailer from "nodemailer";
-import dns from "dns/promises";
-import { URL } from "url";
+import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
+import { classifyCheck } from "./src/monitor/classification.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "";
@@ -23,6 +23,11 @@ type Monitor = {
   timeout_ms: number; expected_status_min: number; expected_status_max: number;
   latency_threshold_ms: number; failure_threshold: number; recovery_threshold: number;
   status: string;
+  alert_email: string | null;
+  alert_cooldown_minutes: number;
+  fallback_url: string | null;
+  failover_enabled: boolean;
+  failover_trigger_count: number;
 };
 
 let running = false;
@@ -65,20 +70,27 @@ async function checkMonitor(m: Monitor) {
   let errorMessage: string | null = null;
 
   try {
-    const target = await safeUrl(m.url);
-    const response = await axios.get(target, {
+    const target = await resolvePublicHttpTarget(m.url);
+    const response = await axios.get(target.url, {
       timeout: Math.min(60000, Math.max(500, m.timeout_ms || 5000)),
       maxRedirects: 0,
       validateStatus: () => true,
-      responseType: "stream"
+      responseType: "stream",
+      ...pinnedAgents(target)
     });
     latency = Date.now() - started;
     statusCode = response.status;
-    httpHealthy = statusCode >= m.expected_status_min && statusCode <= m.expected_status_max;
-    ok = httpHealthy;
+    const classification = classifyCheck(
+      statusCode,
+      latency,
+      m.expected_status_min,
+      m.expected_status_max,
+      m.latency_threshold_ms || 250
+    );
+    httpHealthy = classification.httpHealthy;
+    ok = classification.ok;
+    errorCode = classification.errorCode;
     response.data.destroy();
-    if (!httpHealthy) errorCode = "HTTP_STATUS";
-    else if (latency > (m.latency_threshold_ms || 250)) errorCode = "LATENCY";
   } catch (error: any) {
     latency = Date.now() - started;
     errorCode = error?.code || "CHECK_FAILED";
@@ -111,11 +123,11 @@ async function checkMonitor(m: Monitor) {
     const incidentId = created?.[0]?.id || null;
     await queueAlert(m, incidentId, "incident_opened");
     if (m.failover_enabled && m.fallback_url && failures >= m.failover_trigger_count) {
-      const fallback = await safeUrl(m.fallback_url);
+      const fallback = await resolvePublicHttpTarget(m.fallback_url);
       try {
-        const fallbackResponse = await axios.get(fallback, { timeout: 5000, maxRedirects: 0, validateStatus: () => true });
+        const fallbackResponse = await axios.get(fallback.url, { timeout: 5000, maxRedirects: 0, validateStatus: () => true, ...pinnedAgents(fallback) });
         const healthy = fallbackResponse.status >= 200 && fallbackResponse.status < 300;
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback, status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(), error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status }) });
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url, status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(), error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status }) });
         if (healthy) await queueAlert(m, incidentId, "failover_triggered");
       } catch (error) {
         await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback, status: "failed", completed_at: new Date().toISOString(), error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed" }) });
