@@ -68,7 +68,8 @@ async function checkMonitor(m: Monitor) {
     ok = statusCode >= m.expected_status_min && statusCode <= m.expected_status_max &&
       latency <= (m.latency_threshold_ms || 250);
     response.data.destroy();
-    if (!httpHealthy) errorCode = "HTTP_STATUS";\n    else if (latency > m.latency_threshold_ms) errorCode = "LATENCY";
+    if (!httpHealthy) errorCode = "HTTP_STATUS";
+    else if (latency > (m.latency_threshold_ms || 250)) errorCode = "LATENCY";
   } catch (error: any) {
     latency = Date.now() - started;
     errorCode = error?.code || "CHECK_FAILED";
