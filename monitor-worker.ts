@@ -145,8 +145,8 @@ async function queueAlert(m: Monitor, incidentId: string | null, alertType: "inc
 
 async function dispatchAlerts() {
   if (!mailer) return;
-  const cutoff = new Date(Date.now() - ALERT_RETRY_DELAY_MS).toISOString();
-  const alerts = await db("monitor_alerts?status=eq.pending&next_attempt_at=lte." + encodeURIComponent(cutoff) + "&order=created_at.asc&limit=10");
+  const now = new Date().toISOString();
+  const alerts = await db("monitor_alerts?status=eq.pending&next_attempt_at=lte." + encodeURIComponent(now) + "&order=created_at.asc&limit=10");
   for (const alert of alerts) {
     try {
       await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
