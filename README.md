@@ -51,6 +51,11 @@ Fallback endpoints can be health-verified and recorded as failover events. This 
 
 ### Phase 4 verification
 
-Phase 4 adds reusable monitoring security/classification modules and automated tests for private/reserved IPv4 and IPv6 ranges, IPv4-mapped IPv6 addresses, HTTP status classification, and latency degradation. The worker and API use the same DNS validation and pinned-address HTTP agents, with redirects disabled for monitor targets.
+Phase 4 adds reusable monitoring security/classification modules, automated tests, durable alert retry/backoff, bounded check-history cleanup, and separates the long-running monitor worker from the HTTP API lifecycle. for private/reserved IPv4 and IPv6 ranges, IPv4-mapped IPv6 addresses, HTTP status classification, and latency degradation. The worker and API use the same DNS validation and pinned-address HTTP agents, with redirects disabled for monitor targets.
 
 The repository also exposes `npm test`, `npm run verify`, and `npm run security:audit`. CI now runs linting, tests, and the production build on pushes and pull requests. Dependency audit results still depend on the current npm advisory database.
+
+
+### Worker deployment requirement
+
+The production API no longer starts the long-running monitor worker automatically. Run the worker as a separate persistent process/service using `npm run worker`, with the same Supabase server-side credentials and SMTP configuration. This avoids coupling monitoring to an Express/serverless request lifecycle. A scheduler or managed worker platform should keep that process alive and restart it on failure.
