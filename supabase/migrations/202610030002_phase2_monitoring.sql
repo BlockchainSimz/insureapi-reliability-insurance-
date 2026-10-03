@@ -53,3 +53,7 @@ create policy "incidents_update_own" on public.monitor_incidents for update to a
 
 -- Worker-only columns are protected from browser clients by keeping mutations server-side.
 create index if not exists monitor_checks_ok_idx on public.monitor_checks(monitor_id, ok, checked_at desc);
+
+-- Worker uses the dedicated authenticated service identity rather than browser sessions.
+-- The actual role/key provisioning is deployment-specific; do not place a service-role key in VITE_* variables.
+
