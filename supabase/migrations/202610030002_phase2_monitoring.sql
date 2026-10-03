@@ -153,7 +153,9 @@ create index if not exists monitor_alerts_retry_idx
   where status = 'pending';
 
 -- Keep high-volume check history bounded by retention policy.
-create or replace function public.cleanup_monitor_checks(p_retention_days integer default 90)
+create schema if not exists private;
+
+create or replace function private.cleanup_monitor_checks(p_retention_days integer default 90)
 returns bigint
 language plpgsql
 security definer
@@ -171,5 +173,5 @@ $$;
 
 
 -- This is a privileged maintenance function; never expose it to browser roles.
-revoke execute on function public.cleanup_monitor_checks(integer) from public, anon, authenticated;
-grant execute on function public.cleanup_monitor_checks(integer) to service_role;
+revoke execute on function private.cleanup_monitor_checks(integer) from public, anon, authenticated;
+grant execute on function private.cleanup_monitor_checks(integer) to service_role;
