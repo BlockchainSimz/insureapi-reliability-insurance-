@@ -35,10 +35,10 @@ async function safeUrl(raw: string) {
 }
 
 async function db(table: string, init: RequestInit = {}) {
-  if (!SUPABASE_URL || !SUPABASE_KEY || !WORKER_TOKEN) throw new Error("Worker persistence is not configured");
+  if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error("Worker persistence is not configured");
   const headers = new Headers(init.headers);
   headers.set("apikey", SUPABASE_KEY);
-  headers.set("Authorization", "Bearer " + WORKER_TOKEN);
+  headers.set("Authorization", "Bearer " + SUPABASE_KEY);
   headers.set("Content-Type", "application/json");
   const res = await fetch(SUPABASE_URL + "/rest/v1/" + table, { ...init, headers });
   const body = await res.text();
@@ -144,7 +144,7 @@ async function tick() {
 }
 
 export function startMonitorWorker() {
-  if (!SUPABASE_URL || !SUPABASE_KEY || !WORKER_TOKEN) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.warn("[monitor-worker] disabled: persistence/worker token not configured");
     return () => {};
   }
