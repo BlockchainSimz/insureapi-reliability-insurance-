@@ -1,20 +1,42 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# InsureAPI Reliability Insurance
 
-# Run and deploy your AI Studio app
+InsureAPI is a reliability monitoring and insurance operations console.
 
-This contains everything you need to run your app locally.
+## Phase 1 — production foundation
 
-View your app in AI Studio: https://ai.studio/apps/60afa373-9a0c-41ce-8120-2737cb756ecf
+Phase 1 establishes persistent Postgres storage, RLS, Supabase Auth integration, server-side validation, security middleware, readiness endpoints and CI.
 
-## Run Locally
+### Supabase setup
 
-**Prerequisites:**  Node.js
+Use a dedicated Supabase project for InsureAPI. Do not reuse another application's database.
 
+Apply `supabase/migrations/202610030001_phase1_foundation.sql`, then configure the variables in `.env.example`.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Production requires:
+- `NODE_ENV=production`
+- `AUTH_REQUIRED=true`
+- `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `APP_URL`
+
+Never put a Supabase service-role or secret key in a VITE_ variable.
+
+The API validates the authenticated Supabase user on every protected request. Database access uses that user's bearer token so RLS remains the authorization boundary.
+
+### Local development
+
+1. Use Node.js 22 and npm.
+2. Copy `.env.example` to `.env.local`.
+3. Configure Supabase values for authenticated testing.
+4. Run `npm install`.
+5. Run `npm run dev`.
+6. Run `npm run lint`.
+7. Run `npm run build`.
+
+### Current roadmap
+
+1. Foundation — current phase.
+2. Monitoring engine — real worker, retries, timeouts and durable checks.
+3. Reliability and alerting — real email provider, SLA calculations, escalation and failover.
+4. Security and quality — deeper SSRF hardening, automated tests, audit coverage and dependency scanning.
+5. Deployment — staging/production, observability, backups, DR and smoke tests.
