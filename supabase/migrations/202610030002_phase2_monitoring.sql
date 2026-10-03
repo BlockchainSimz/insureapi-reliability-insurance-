@@ -56,4 +56,7 @@ create index if not exists monitor_checks_ok_idx on public.monitor_checks(monito
 
 -- Worker uses the dedicated authenticated service identity rather than browser sessions.
 -- The actual role/key provisioning is deployment-specific; do not place a service-role key in VITE_* variables.
-
+-- Prevent duplicate open incidents if multiple worker instances overlap.
+create unique index if not exists monitor_incidents_one_open_idx
+  on public.monitor_incidents(monitor_id)
+  where status = 'open';
