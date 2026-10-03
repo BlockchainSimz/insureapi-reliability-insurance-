@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import { authenticatedFetch, authConfigured, getCurrentUser, signOut } from "./lib/auth";
+import AuthScreen from "./components/AuthScreen";
 import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap, HelpCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -54,15 +56,27 @@ export default function App() {
   const [selectedMonitorId, setSelectedMonitorId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [authenticated, setAuthenticated] = useState(!authConfigured);
+  const [authChecking, setAuthChecking] = useState(authConfigured);
 
   useEffect(() => {
+    let active = true;
+    if (authConfigured) {
+      getCurrentUser().then(user => {
+        if (!active) return;
+        setAuthenticated(Boolean(user));
+        setAuthChecking(false);
+      }).catch(() => {
+        if (active) setAuthChecking(false);
+      });
+    }
     const hasSeenOnboarding = localStorage.getItem("insureapi_onboarding_complete");
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
-    fetchMonitors();
+    if (!authConfigured) fetchMonitors();
     const interval = setInterval(fetchMonitors, 10000);
-    return () => clearInterval(interval);
+    return () => { active = false; clearInterval(interval); };
   }, []);
 
   const handleGlobalHealthCheck = async () => {
@@ -83,7 +97,7 @@ export default function App() {
 
   const fetchMonitors = async () => {
     try {
-      const res = await fetch("/api/monitors");
+      const res = await authenticatedFetch("/api/monitors");
       const data = await res.json();
       setMonitors(data);
       setLoading(false);
@@ -167,7 +181,7 @@ export default function App() {
           >
             <HelpCircle className="w-4 h-4" />
           </Button>
-          <Button variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
+          <Button onClick={() => { signOut(); setAuthenticated(false); }} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
             <Plus className="w-4 h-4 mr-2" /> NEW MONITOR
           </Button>
         </div>
