@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "worker": "tsx monitor-worker-entry.ts",
+    "test:worker": "tsx monitor-worker-entry.ts --once"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

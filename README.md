@@ -35,8 +35,8 @@ The API validates the authenticated Supabase user on every protected request. Da
 
 ### Current roadmap
 
-1. Foundation — current phase.
-2. Monitoring engine — real worker, retries, timeouts and durable checks.
+1. Foundation — completed.
+2. Monitoring engine — current phase: real worker, retries/timeouts and durable checks.
 3. Reliability and alerting — real email provider, SLA calculations, escalation and failover.
 4. Security and quality — deeper SSRF hardening, automated tests, audit coverage and dependency scanning.
 5. Deployment — staging/production, observability, backups, DR and smoke tests.

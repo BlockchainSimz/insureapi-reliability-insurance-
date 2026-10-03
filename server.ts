@@ -5,6 +5,7 @@ import { URL } from "url";
 import dns from "dns/promises";
 import { fileURLToPath } from "url";
 import axios from "axios";
+import { startMonitorWorker } from "./monitor-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -268,7 +269,10 @@ async function startServer() {
     res.status(500).json({ error: "Internal server error" });
   });
 
-  app.listen(PORT, "0.0.0.0", () => console.log("InsureAPI server listening on port " + PORT));
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("InsureAPI server listening on port " + PORT);
+    if (NODE_ENV === "production") startMonitorWorker();
+  });
 }
 
 startServer().catch(error => {
