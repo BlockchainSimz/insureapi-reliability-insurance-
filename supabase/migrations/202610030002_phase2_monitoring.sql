@@ -143,10 +143,6 @@ as $$
     and checked_at >= now() - make_interval(hours => greatest(1, least(p_window_hours, 720)));
 $;
 
--- This is a privileged maintenance function; never expose it to browser roles.
-revoke execute on function public.cleanup_monitor_checks(integer) from public, anon, authenticated;
-grant execute on function public.cleanup_monitor_checks(integer) to service_role;
-
 
 -- Phase 4: durable alert retry scheduling and monitor-check retention support.
 alter table public.monitor_alerts
@@ -172,3 +168,8 @@ begin
   return deleted_count;
 end;
 $$;
+
+
+-- This is a privileged maintenance function; never expose it to browser roles.
+revoke execute on function public.cleanup_monitor_checks(integer) from public, anon, authenticated;
+grant execute on function public.cleanup_monitor_checks(integer) to service_role;
