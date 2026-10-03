@@ -74,16 +74,16 @@ export default function App() {
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
-    if (authConfigured) {
-      void fetchMonitors();
-    } else {
-      void fetchMonitors();
-    }
-    const interval = setInterval(() => {
-      if (!authConfigured || authenticated) void fetchMonitors();
-    }, 10000);
-    return () => { active = false; clearInterval(interval); };
+    if (!authConfigured) void fetchMonitors();
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!authConfigured || !authenticated) return;
+    void fetchMonitors();
+    const interval = setInterval(() => void fetchMonitors(), 10000);
+    return () => clearInterval(interval);
+  }, [authenticated]);
 
   if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0]"><p className="text-xs uppercase tracking-widest">Checking authentication...</p></div>;
   if (authConfigured && !authenticated) return <AuthScreen onAuthenticated={() => setAuthenticated(true)} />;
