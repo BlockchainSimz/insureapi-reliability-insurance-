@@ -51,6 +51,7 @@ async function checkMonitor(m: Monitor) {
   let statusCode: number | null = null;
   let latency = 0;
   let ok = false;
+  let httpHealthy = false;
   let errorCode: string | null = null;
   let errorMessage: string | null = null;
 
@@ -67,7 +68,7 @@ async function checkMonitor(m: Monitor) {
     ok = statusCode >= m.expected_status_min && statusCode <= m.expected_status_max &&
       latency <= (m.latency_threshold_ms || 250);
     response.data.destroy();
-    if (!ok) errorCode = statusCode < m.expected_status_min || statusCode > m.expected_status_max ? "HTTP_STATUS" : "LATENCY";
+    if (!httpHealthy) errorCode = "HTTP_STATUS";\n    else if (latency > m.latency_threshold_ms) errorCode = "LATENCY";
   } catch (error: any) {
     latency = Date.now() - started;
     errorCode = error?.code || "CHECK_FAILED";
@@ -108,7 +109,7 @@ async function checkMonitor(m: Monitor) {
     });
   }
 
-  const status = ok ? (latency > m.latency_threshold_ms ? "degraded" : "up") : "down";
+  const status = !httpHealthy ? "down" : latency > m.latency_threshold_ms ? "degraded" : "up";
   await db("monitors?id=eq." + encodeURIComponent(m.id), {
     method: "PATCH", headers: { Prefer: "return=minimal" },
     body: JSON.stringify({ status, latency_ms: latency, last_checked_at: new Date().toISOString() })
