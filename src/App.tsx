@@ -74,8 +74,14 @@ export default function App() {
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
-    if (!authConfigured) fetchMonitors();
-    const interval = setInterval(fetchMonitors, 10000);
+    if (authConfigured) {
+      void fetchMonitors();
+    } else {
+      void fetchMonitors();
+    }
+    const interval = setInterval(() => {
+      if (!authConfigured || authenticated) void fetchMonitors();
+    }, 10000);
     return () => { active = false; clearInterval(interval); };
   }, []);
 
@@ -103,6 +109,26 @@ export default function App() {
       setLoading(false);
     } catch (error) {
       console.error("Failed to fetch monitors", error);
+    }
+  };
+
+  const handleCreateMonitor = async () => {
+    const name = window.prompt("Monitor name");
+    if (!name?.trim()) return;
+    const url = window.prompt("Public HTTP/HTTPS URL to monitor");
+    if (!url?.trim()) return;
+    try {
+      const res = await authenticatedFetch("/api/monitors", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim(), url: url.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to create monitor");
+      setMonitors(prev => [...prev, data]);
+      setSelectedMonitorId(data.id);
+      toast.success("Monitor created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create monitor");
     }
   };
 
@@ -181,9 +207,14 @@ export default function App() {
           >
             <HelpCircle className="w-4 h-4" />
           </Button>
-          <Button onClick={() => { signOut(); setAuthenticated(false); }} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
+          <Button onClick={handleCreateMonitor} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
             <Plus className="w-4 h-4 mr-2" /> NEW MONITOR
           </Button>
+          {authConfigured && authenticated && (
+            <Button onClick={() => { signOut(); setAuthenticated(false); setMonitors([]); setSelectedMonitorId(null); }} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-4">
+              SIGN OUT
+            </Button>
+          )}
         </div>
       </header>
 
