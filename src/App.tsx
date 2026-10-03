@@ -85,6 +85,9 @@ export default function App() {
     return () => { active = false; clearInterval(interval); };
   }, []);
 
+  if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0]"><p className="text-xs uppercase tracking-widest">Checking authentication...</p></div>;
+  if (authConfigured && !authenticated) return <AuthScreen onAuthenticated={() => setAuthenticated(true)} />;
+
   const handleGlobalHealthCheck = async () => {
     toast.promise(
       Promise.all(monitors.map(m => handleCheckHealth(m.id))),
