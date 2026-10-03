@@ -11,7 +11,10 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "worker": "tsx monitor-worker-entry.ts",
-    "test:worker": "tsx monitor-worker-entry.ts --once"
+    "test:worker": "tsx monitor-worker-entry.ts --once",
+    "test": "tsx --test tests/*.test.ts",
+    "security:audit": "npm audit --audit-level=high",
+    "verify": "npm run lint && npm run test && npm run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
