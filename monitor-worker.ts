@@ -14,6 +14,8 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_USER = process.env.SMTP_USER || "";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+const ALERT_MAX_ATTEMPTS = Math.max(1, Math.min(10, Number(process.env.ALERT_MAX_ATTEMPTS || 5)));
+const ALERT_RETRY_DELAY_MS = Math.max(1000, Math.min(3600000, Number(process.env.ALERT_RETRY_DELAY_MS || 30000)));
 const mailer = SMTP_HOST && SMTP_USER && SMTP_PASS
   ? nodemailer.createTransport({ host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465, auth: { user: SMTP_USER, pass: SMTP_PASS } })
   : null;
@@ -143,13 +145,22 @@ async function queueAlert(m: Monitor, incidentId: string | null, alertType: "inc
 
 async function dispatchAlerts() {
   if (!mailer) return;
-  const alerts = await db("monitor_alerts?status=eq.pending&order=created_at.asc&limit=10");
+  const cutoff = new Date(Date.now() - ALERT_RETRY_DELAY_MS).toISOString();
+  const alerts = await db("monitor_alerts?status=eq.pending&created_at=lte." + encodeURIComponent(cutoff) + "&order=created_at.asc&limit=10");
   for (const alert of alerts) {
     try {
       await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
       await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null }) });
     } catch (error) {
-      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "failed", attempts: (alert.attempts || 0) + 1, last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed" }) });
+      const attempts = (alert.attempts || 0) + 1;
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          status: attempts >= ALERT_MAX_ATTEMPTS ? "failed" : "pending",
+          attempts,
+          last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed"
+        })
+      });
     }
   }
 }
