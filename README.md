@@ -37,6 +37,13 @@ The API validates the authenticated Supabase user on every protected request. Da
 
 1. Foundation — completed.
 2. Monitoring engine — current phase: real worker, retries/timeouts and durable checks.
-3. Reliability and alerting — real email provider, SLA calculations, escalation and failover.
+3. Reliability and alerting — current phase: rolling reliability scoring, durable alert outbox, SMTP dispatch, incident escalation and fallback verification. Failover events are recorded; actual traffic/DNS routing remains deployment-specific.
 4. Security and quality — deeper SSRF hardening, automated tests, audit coverage and dependency scanning.
 5. Deployment — staging/production, observability, backups, DR and smoke tests.
+
+
+### Phase 3 configuration
+
+The worker calculates a 24-hour reliability score from durable checks and stores it in `monitors.reliability_score`. Incident alerts are placed in a durable outbox and dispatched through SMTP when `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` are configured. Alert cooldowns prevent repeated notifications.
+
+Fallback endpoints can be health-verified and recorded as failover events. This does not change customer traffic routing; production routing must be implemented through the application's gateway, DNS, load balancer, or service-mesh layer.
