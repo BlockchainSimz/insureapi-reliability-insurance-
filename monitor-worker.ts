@@ -32,22 +32,6 @@ type Monitor = {
 
 let running = false;
 
-function isPrivateIp(ip: string) {
-  const v = ip.toLowerCase();
-  return v === "127.0.0.1" || v === "::1" || v.startsWith("10.") ||
-    v.startsWith("192.168.") || v.startsWith("169.254.") ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(v) ||
-    v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80:");
-}
-
-async function safeUrl(raw: string) {
-  const u = new URL(raw);
-  if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) throw new Error("Unsafe target URL");
-  const addresses = await dns.lookup(u.hostname, { all: true });
-  if (addresses.some(a => isPrivateIp(a.address))) throw new Error("Private target blocked");
-  return u.toString();
-}
-
 async function db(table: string, init: RequestInit = {}) {
   if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error("Worker persistence is not configured");
   const headers = new Headers(init.headers);
@@ -130,7 +114,7 @@ async function checkMonitor(m: Monitor) {
         await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url, status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(), error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status }) });
         if (healthy) await queueAlert(m, incidentId, "failover_triggered");
       } catch (error) {
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback, status: "failed", completed_at: new Date().toISOString(), error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed" }) });
+        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url, status: "failed", completed_at: new Date().toISOString(), error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed" }) });
       }
     }
   } else if (ok && open && recoveries >= m.recovery_threshold) {
