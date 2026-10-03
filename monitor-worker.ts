@@ -140,13 +140,13 @@ async function queueAlert(m: Monitor, incidentId: string | null, alertType: "inc
   const cutoff = new Date(Date.now() - Math.max(1, m.alert_cooldown_minutes || 30) * 60000).toISOString();
   const existing = await db("monitor_alerts?monitor_id=eq." + encodeURIComponent(m.id) + "&alert_type=eq." + encodeURIComponent(alertType) + "&created_at=gte." + encodeURIComponent(cutoff) + "&limit=1");
   if (existing.length) return;
-  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email }) });
+  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email, next_attempt_at: new Date().toISOString() }) });
 }
 
 async function dispatchAlerts() {
   if (!mailer) return;
   const cutoff = new Date(Date.now() - ALERT_RETRY_DELAY_MS).toISOString();
-  const alerts = await db("monitor_alerts?status=eq.pending&created_at=lte." + encodeURIComponent(cutoff) + "&order=created_at.asc&limit=10");
+  const alerts = await db("monitor_alerts?status=eq.pending&next_attempt_at=lte." + encodeURIComponent(cutoff) + "&order=created_at.asc&limit=10");
   for (const alert of alerts) {
     try {
       await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
@@ -158,6 +158,7 @@ async function dispatchAlerts() {
         body: JSON.stringify({
           status: attempts >= ALERT_MAX_ATTEMPTS ? "failed" : "pending",
           attempts,
+          next_attempt_at: new Date(Date.now() + ALERT_RETRY_DELAY_MS * attempts).toISOString(),
           last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed"
         })
       });
