@@ -4,7 +4,7 @@ import { URL } from "url";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "";
-const WORKER_TOKEN = process.env.MONITOR_WORKER_TOKEN || "";
+
 const ONCE = process.argv.includes("--once");
 const WORKER_INTERVAL_MS = Number(process.env.MONITOR_WORKER_INTERVAL_MS || 10000);
 const CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.MONITOR_WORKER_CONCURRENCY || 5)));
@@ -65,8 +65,8 @@ async function checkMonitor(m: Monitor) {
     });
     latency = Date.now() - started;
     statusCode = response.status;
-    ok = statusCode >= m.expected_status_min && statusCode <= m.expected_status_max &&
-      latency <= (m.latency_threshold_ms || 250);
+    httpHealthy = statusCode >= m.expected_status_min && statusCode <= m.expected_status_max;
+    ok = httpHealthy;
     response.data.destroy();
     if (!httpHealthy) errorCode = "HTTP_STATUS";
     else if (latency > (m.latency_threshold_ms || 250)) errorCode = "LATENCY";
@@ -147,7 +147,7 @@ async function tick() {
 
 export function startMonitorWorker() {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.warn("[monitor-worker] disabled: persistence/worker token not configured");
+    console.warn("[monitor-worker] disabled: Supabase persistence credentials are not configured");
     return () => {};
   }
   void tick();
