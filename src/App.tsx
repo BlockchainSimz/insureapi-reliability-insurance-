@@ -108,7 +108,7 @@ export default function App() {
 
   const handleTriggerFallback = async (id: string) => {
     try {
-      const res = await fetch(`/api/monitors/${id}/fallback`, {
+      const res = await authenticatedFetch(`/api/monitors/${id}/fallback`, {
         method: "POST",
       });
       if (!res.ok) throw new Error("Failed to trigger fallback");
@@ -121,7 +121,7 @@ export default function App() {
 
   const handleCheckHealth = async (id: string) => {
     try {
-      const res = await fetch(`/api/monitors/${id}/check`);
+      const res = await authenticatedFetch(`/api/monitors/${id}/check`);
       if (!res.ok) throw new Error("Health check failed");
       return await res.json();
     } catch (error) {
