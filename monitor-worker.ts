@@ -126,8 +126,10 @@ async function checkMonitor(m: Monitor) {
       method: "PATCH", headers: { Prefer: "return=minimal" },
       body: JSON.stringify({ status: "resolved", resolved_at: new Date().toISOString(), recovery_count: recoveries })
     });
+    await queueAlert(m, open.id, "incident_resolved");
   }
 
+  await updateReliability(m);
   const status = !httpHealthy ? "down" : latency > m.latency_threshold_ms ? "degraded" : "up";
   await db("monitors?id=eq." + encodeURIComponent(m.id), {
     method: "PATCH", headers: { Prefer: "return=minimal" },
@@ -183,6 +185,7 @@ async function tick() {
         await checkMonitor(m);
       }));
     }
+    await dispatchAlerts();
   } catch (error) {
     console.error("[monitor-worker] tick failed", error);
   } finally {
