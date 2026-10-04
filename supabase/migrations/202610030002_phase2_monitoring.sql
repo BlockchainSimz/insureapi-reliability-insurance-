@@ -141,4 +141,37 @@ as $$
   from public.monitor_checks
   where monitor_id = p_monitor_id
     and checked_at >= now() - make_interval(hours => greatest(1, least(p_window_hours, 720)));
+$;
+
+
+-- Phase 4: durable alert retry scheduling and monitor-check retention support.
+alter table public.monitor_alerts
+  add column if not exists next_attempt_at timestamptz not null default now();
+
+create index if not exists monitor_alerts_retry_idx
+  on public.monitor_alerts(status, next_attempt_at, created_at)
+  where status = 'pending';
+
+-- Keep high-volume check history bounded by retention policy.
+create schema if not exists private;
+
+create or replace function private.cleanup_monitor_checks(p_retention_days integer default 90)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count bigint;
+begin
+  delete from public.monitor_checks
+  where checked_at < now() - make_interval(days => greatest(7, least(p_retention_days, 3650)));
+  get diagnostics deleted_count = row_count;
+  return deleted_count;
+end;
 $$;
+
+
+-- This is a privileged maintenance function; never expose it to browser roles.
+revoke execute on function private.cleanup_monitor_checks(integer) from public, anon, authenticated;
+grant execute on function private.cleanup_monitor_checks(integer) to service_role;

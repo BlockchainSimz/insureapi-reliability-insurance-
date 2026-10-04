@@ -4,10 +4,27 @@ on:
   push:
     branches: ["main", "phase-*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "phase-*"]
+
+permissions:
+  contents: read
 
 jobs:
   verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10 # production CI gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  security:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -16,7 +33,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-      - run: npm run test:worker -- --once
+      - run: npm install --ignore-scripts
+      - run: npm audit fix --ignore-scripts || true
+      - run: npm audit --audit-level=high

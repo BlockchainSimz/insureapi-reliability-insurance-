@@ -1,11 +1,9 @@
 import express, { Request, Response, NextFunction } from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { URL } from "url";
-import dns from "dns/promises";
 import { fileURLToPath } from "url";
 import axios from "axios";
-import { startMonitorWorker } from "./monitor-worker.js";
+import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,30 +35,9 @@ function validateEmail(value: unknown) {
 }
 
 async function validateTargetUrl(raw: unknown) {
-  if (typeof raw !== "string" || raw.length > 2048) throw new Error("Invalid URL");
-  const parsed = new URL(raw);
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only HTTP(S) URLs are supported");
-  if (parsed.username || parsed.password) throw new Error("Credential-bearing URLs are not allowed");
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") {
-    throw new Error("Private or metadata hosts are not allowed");
-  }
-  const records = await dns.lookup(hostname, { all: true });
-  for (const record of records) {
-    const ip = record.address;
-    if (
-      ip === "127.0.0.1" || ip === "::1" ||
-      ip.startsWith("10.") || ip.startsWith("192.168.") ||
-      ip.startsWith("169.254.") || ip.startsWith("172.16.") || ip.startsWith("172.17.") ||
-      ip.startsWith("172.18.") || ip.startsWith("172.19.") || ip.startsWith("172.20.") ||
-      ip.startsWith("172.21.") || ip.startsWith("172.22.") || ip.startsWith("172.23.") ||
-      ip.startsWith("172.24.") || ip.startsWith("172.25.") || ip.startsWith("172.26.") ||
-      ip.startsWith("172.27.") || ip.startsWith("172.28.") || ip.startsWith("172.29.") ||
-      ip.startsWith("172.30.") || ip.startsWith("172.31.") || ip.startsWith("fc") ||
-      ip.startsWith("fd") || ip.startsWith("fe80:")
-    ) throw new Error("Private or link-local targets are not allowed");
-  }
-  return parsed.toString();
+  if (typeof raw !== "string") throw new Error("Invalid URL");
+  const target = await resolvePublicHttpTarget(raw);
+  return target.url;
 }
 
 function securityHeaders(req: Request, res: Response, next: NextFunction) {
@@ -237,9 +214,14 @@ async function startServer() {
         : await supabaseRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id));
       const monitor = monitorRows?.[0];
       if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-      const target = await validateTargetUrl(monitor.url);
+      const target = await resolvePublicHttpTarget(monitor.url);
       const started = Date.now();
-      const response = await axios.get(target, { timeout: 5000, maxRedirects: 3, validateStatus: () => true });
+      const response = await axios.get(target.url, {
+        timeout: 5000,
+        maxRedirects: 0,
+        validateStatus: () => true,
+        ...pinnedAgents(target)
+      });
       const latency = Date.now() - started;
       return res.json({ status: response.status, statusText: response.statusText, latency, timestamp: new Date().toISOString(), ok: response.status >= 200 && response.status < 300 });
     } catch (error) {
@@ -248,11 +230,11 @@ async function startServer() {
   });
 
   app.post("/api/monitors/:id/fallback", requireSupabase, async (_req, res) => {
-    res.status(501).json({ error: "Automated failover is intentionally deferred to Phase 3" });
+    res.status(501).json({ error: "Traffic failover requires a deployment-specific routing integration; Phase 3 only verifies and records fallback health." });
   });
 
   app.post("/api/monitors/:id/notify", requireSupabase, async (_req, res) => {
-    res.status(501).json({ error: "Production notifications are intentionally deferred to Phase 3" });
+    res.status(501).json({ error: "Notifications are handled by the Phase 3 worker alert outbox and SMTP dispatcher." });
   });
 
   if (NODE_ENV !== "production") {
@@ -271,7 +253,6 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log("InsureAPI server listening on port " + PORT);
-    if (NODE_ENV === "production") startMonitorWorker();
   });
 }
 
