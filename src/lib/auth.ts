@@ -17,6 +17,15 @@ function headers() {
   return { apikey: SUPABASE_KEY, "Content-Type": "application/json" };
 }
 
+function persistSession(data: any): AuthSession {
+  const session: AuthSession = {
+    ...data,
+    expires_at: Math.floor(Date.now() / 1000) + Number(data.expires_in || 3600),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  return session;
+}
+
 export async function signIn(email: string, password: string): Promise<AuthSession> {
   if (!SUPABASE_URL) throw new Error("Supabase URL is not configured");
   const response = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=password", {
@@ -26,12 +35,7 @@ export async function signIn(email: string, password: string): Promise<AuthSessi
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error_description || data.msg || data.message || "Sign in failed");
-  const session: AuthSession = {
-    ...data,
-    expires_at: Math.floor(Date.now() / 1000) + Number(data.expires_in || 3600),
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  return session;
+  return persistSession(data);
 }
 
 export function getStoredSession(): AuthSession | null {
@@ -44,9 +48,33 @@ export function getStoredSession(): AuthSession | null {
 export function getAccessToken() { return getStoredSession()?.access_token || null; }
 export function signOut() { localStorage.removeItem(STORAGE_KEY); }
 
-export async function getCurrentUser() {
+async function refreshSession(): Promise<AuthSession | null> {
   const session = getStoredSession();
+  if (!SUPABASE_URL || !session?.refresh_token) return null;
+
+  const response = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ refresh_token: session.refresh_token }),
+  });
+
+  if (!response.ok) {
+    signOut();
+    return null;
+  }
+  return persistSession(await response.json());
+}
+
+export async function getCurrentUser() {
+  let session = getStoredSession();
   if (!session?.access_token || !SUPABASE_URL) return null;
+
+  const expiresSoon = session.expires_at <= Math.floor(Date.now() / 1000) + 60;
+  if (expiresSoon) {
+    session = await refreshSession();
+    if (!session) return null;
+  }
+
   const response = await fetch(SUPABASE_URL + "/auth/v1/user", {
     headers: { ...headers(), Authorization: "Bearer " + session.access_token },
   });
@@ -55,8 +83,21 @@ export async function getCurrentUser() {
 }
 
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const token = getAccessToken();
+  let session = getStoredSession();
+  if (session?.expires_at && session.expires_at <= Math.floor(Date.now() / 1000) + 60) {
+    session = await refreshSession();
+  }
+
   const requestHeaders = new Headers(init.headers);
-  if (token) requestHeaders.set("Authorization", "Bearer " + token);
-  return fetch(input, { ...init, headers: requestHeaders });
+  if (session?.access_token) requestHeaders.set("Authorization", "Bearer " + session.access_token);
+  let response = await fetch(input, { ...init, headers: requestHeaders });
+
+  if (response.status === 401 && session?.refresh_token) {
+    const refreshed = await refreshSession();
+    if (refreshed) {
+      requestHeaders.set("Authorization", "Bearer " + refreshed.access_token);
+      response = await fetch(input, { ...init, headers: requestHeaders });
+    }
+  }
+  return response;
 }
