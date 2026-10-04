@@ -34,4 +34,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install --ignore-scripts
+      - run: npm audit fix --ignore-scripts
       - run: npm audit --audit-level=high
