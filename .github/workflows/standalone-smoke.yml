@@ -16,7 +16,7 @@ jobs:
         run: docker build -t insureapi:ci .
       - name: Start standalone API in demo mode
         run: |
-          docker run -d --name insureapi-ci -p 3000:3000 -e NODE_ENV=production -e DEMO_MODE=true insureapi:ci
+          docker run -d --name insureapi-ci -p 3000:3000 -e NODE_ENV=production -e AUTH_REQUIRED=false -e DEMO_MODE=true insureapi:ci
           for i in {1..30}; do
             if curl --fail --silent http://127.0.0.1:3000/health; then exit 0; fi
             sleep 2
