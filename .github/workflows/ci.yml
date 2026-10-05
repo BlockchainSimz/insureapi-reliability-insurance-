@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "phase-*"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: insureapi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d insureapi"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+        env:
+          GEMINI_API_KEY: ci-placeholder
+      - run: node --import tsx -e "process.env.DATABASE_URL='postgresql://postgres:postgres@localhost:5432/insureapi'; process.env.NODE_ENV='test'; import('./src/server/db.ts').then(async m=>{await m.migrate(); await m.pool.end(); console.log('database migration ok')})"
