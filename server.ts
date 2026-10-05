@@ -140,10 +140,19 @@ async function startServer() {
   app.use(rateLimit);
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV }));
-  app.get("/ready", (_req, res) => {
-    const ready = isDemoMode() || Boolean(SUPABASE_URL && SUPABASE_KEY);
-    res.status(ready ? 200 : 503).json({ ready, persistence: Boolean(SUPABASE_URL && SUPABASE_KEY), authRequired: AUTH_REQUIRED });
+  app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/ready", async (_req, res) => {
+    const configured = Boolean(SUPABASE_URL && SUPABASE_KEY);
+    if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
+    if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
+    try {
+      const response = await fetch(SUPABASE_URL + "/auth/v1/settings", { headers: { apikey: SUPABASE_KEY } });
+      const authService = response.ok;
+      const ready = AUTH_REQUIRED ? authService : true;
+      return res.status(ready ? 200 : 503).json({ ready, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService });
+    } catch {
+      return res.status(503).json({ ready: false, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: false });
+    }
   });
 
   app.use("/api", requireAuth);
