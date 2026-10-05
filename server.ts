@@ -73,7 +73,7 @@ async function sendAlertEmail(to: string, monitorName: string, type: string, lat
   }
 }
 
-async function startServer() {
+export async function createApp() {
   await setupEmail();
   const app = express();
   const PORT = 3000;
@@ -279,9 +279,16 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  return app;
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  createApp().then((app) => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }).catch((error) => {
+    console.error("Failed to start server", error);
+    process.exit(1);
+  });
+}
