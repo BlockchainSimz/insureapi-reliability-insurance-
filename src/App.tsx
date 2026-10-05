@@ -57,7 +57,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [authenticated, setAuthenticated] = useState(!authConfigured);
-  const [authChecking, setAuthChecking] = useState(authConfigured);\n  const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
+  const [authChecking, setAuthChecking] = useState(authConfigured);
+  const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
 
   useEffect(() => {
     let active = true;
@@ -104,7 +105,16 @@ export default function App() {
     setShowOnboarding(false);
   };
 
-  const fetchSummary = async () => {\n    try {\n      const res = await authenticatedFetch("/api/dashboard/summary");\n      if (res.ok) setSummary(await res.json());\n    } catch (error) {\n      console.error("Failed to fetch dashboard summary", error);\n    }\n  };\n\n  const fetchMonitors = async () => {
+  const fetchSummary = async () => {
+    try {
+      const res = await authenticatedFetch("/api/dashboard/summary");
+      if (res.ok) setSummary(await res.json());
+    } catch (error) {
+      console.error("Failed to fetch dashboard summary", error);
+    }
+  };
+
+  const fetchMonitors = async () => {
     try {
       const res = await authenticatedFetch("/api/monitors");
       const data = await res.json();
