@@ -59,3 +59,14 @@ The repository also exposes `npm test`, `npm run verify`, and `npm run security:
 ### Worker deployment requirement
 
 The production API no longer starts the long-running monitor worker automatically. Run the worker as a separate persistent process/service using `npm run worker`, with the same Supabase server-side credentials and SMTP configuration. This avoids coupling monitoring to an Express/serverless request lifecycle. A scheduler or managed worker platform should keep that process alive and restart it on failure.
+
+## Standalone deployment
+
+InsureAPI is a standalone Node.js + Express application. The same server serves the built Vite frontend and the /api/*, /health, and /ready endpoints. Production deployment does not require Vercel or a separate frontend host.
+
+- Build: npm run build
+- Start: npm start
+- Container: docker compose -f docker-compose.production.yml up -d --build
+- API and frontend are served from the same origin and port (default 3000).
+- The monitoring worker runs as a separate process/container against the same application and Supabase backend.
+
