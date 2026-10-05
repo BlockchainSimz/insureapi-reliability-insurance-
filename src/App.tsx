@@ -57,7 +57,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [authenticated, setAuthenticated] = useState(!authConfigured);
-  const [authChecking, setAuthChecking] = useState(authConfigured);
+  const [authChecking, setAuthChecking] = useState(authConfigured);\n  const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
 
   useEffect(() => {
     let active = true;
@@ -104,7 +104,7 @@ export default function App() {
     setShowOnboarding(false);
   };
 
-  const fetchMonitors = async () => {
+  const fetchSummary = async () => {\n    try {\n      const res = await authenticatedFetch("/api/dashboard/summary");\n      if (res.ok) setSummary(await res.json());\n    } catch (error) {\n      console.error("Failed to fetch dashboard summary", error);\n    }\n  };\n\n  const fetchMonitors = async () => {
     try {
       const res = await authenticatedFetch("/api/monitors");
       const data = await res.json();
@@ -254,12 +254,12 @@ export default function App() {
             </CardHeader>
             <CardContent className="py-6 space-y-4">
               <div className="flex justify-between items-end">
-                <span className="text-5xl font-bold tracking-tighter">97.4%</span>
+                <span className="text-5xl font-bold tracking-tighter">{summary.aggregateReliability.toFixed(1)}%</span>
                 <span className="text-[10px] uppercase tracking-widest opacity-60 mb-2">Aggregate Health</span>
               </div>
-              <Progress value={97.4} className="h-2 rounded-none bg-[#E4E3E0]/20" />
+              <Progress value={summary.aggregateReliability} className="h-2 rounded-none bg-[#E4E3E0]/20" />
               <p className="text-xs opacity-70 leading-relaxed italic">
-                "Overall infrastructure is stable. Minor degradation detected in Twilio SMS endpoints. Predictive analysis suggests 12% risk of failure in next 12h."
+                `Live fleet: ${summary.total} monitors, ${summary.healthy} healthy, ${summary.degraded} degraded, ${summary.down} down.`
               </p>
             </CardContent>
           </Card>
