@@ -131,7 +131,7 @@ function mapMonitor(row: any) {
   };
 }
 
-async function startServer() {
+export async function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -310,7 +310,7 @@ async function startServer() {
     res.status(501).json({ error: "Notifications are handled by the Phase 3 worker alert outbox and SMTP dispatcher." });
   });
 
-  if (NODE_ENV !== "production") {
+  if (NODE_ENV !== "production" && !process.env.VERCEL) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
@@ -324,12 +324,16 @@ async function startServer() {
     res.status(500).json({ error: "Internal server error" });
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log("InsureAPI server listening on port " + PORT);
-  });
+  return app;
 }
 
-startServer().catch(error => {
-  console.error("Fatal startup error", error);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  createApp().then(app => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log("InsureAPI server listening on port " + PORT);
+    });
+  }).catch(error => {
+    console.error("Fatal startup error", error);
+    process.exit(1);
+  });
+}
