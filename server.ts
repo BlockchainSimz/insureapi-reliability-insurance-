@@ -148,6 +148,28 @@ async function startServer() {
 
   app.use("/api", requireAuth);
 
+  app.get("/api/dashboard/summary", async (req: AuthedRequest, res) => {
+    try {
+      if (isDemoMode()) {
+        const total = demoMonitors.length;
+        const healthy = demoMonitors.filter(m => m.status === "up").length;
+        const score = demoMonitors.reduce((sum, m) => sum + m.reliabilityScore, 0) / Math.max(total, 1);
+        return res.json({ total, healthy, degraded: demoMonitors.filter(m => m.status === "degraded").length, down: demoMonitors.filter(m => m.status === "down").length, aggregateReliability: Number(score.toFixed(2)), status: healthy === total ? "operational" : "attention" });
+      }
+      const rows = await supabaseRequest(req, "monitors", { method: "GET", headers: { Prefer: "return=representation" } });
+      const monitors = rows || [];
+      const total = monitors.length;
+      const healthy = monitors.filter((m: any) => m.status === "up").length;
+      const degraded = monitors.filter((m: any) => m.status === "degraded").length;
+      const down = monitors.filter((m: any) => m.status === "down").length;
+      const aggregateReliability = total ? monitors.reduce((sum: number, m: any) => sum + Number(m.reliability_score || 0), 0) / total : 100;
+      return res.json({ total, healthy, degraded, down, aggregateReliability: Number(aggregateReliability.toFixed(2)), status: down > 0 ? "critical" : degraded > 0 ? "attention" : "operational" });
+    } catch (error) {
+      console.error("dashboard summary failed", error);
+      return res.status(500).json({ error: "Failed to load dashboard summary" });
+    }
+  });
+
   app.get("/api/monitors", async (req: AuthedRequest, res) => {
     try {
       if (isDemoMode()) return res.json(demoMonitors);
@@ -183,6 +205,48 @@ async function startServer() {
       return res.status(201).json(mapMonitor(created[0]));
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor" });
+    }
+  });
+
+  app.patch("/api/monitors/:id", requireSupabase, async (req: AuthedRequest, res) => {
+    const body = req.body || {};
+    const patch: Record<string, unknown> = {};
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 120) return res.status(400).json({ error: "Invalid monitor name" });
+      patch.name = body.name.trim();
+    }
+    if (body.url !== undefined) patch.url = await validateTargetUrl(body.url);
+    if (body.fallbackUrl !== undefined) patch.fallback_url = body.fallbackUrl ? await validateTargetUrl(body.fallbackUrl) : null;
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled must be boolean" });
+      patch.enabled = body.enabled;
+    }
+    if (body.checkIntervalSeconds !== undefined) {
+      const value = Number(body.checkIntervalSeconds);
+      if (!Number.isInteger(value) || value < 10 || value > 86400) return res.status(400).json({ error: "checkIntervalSeconds must be 10-86400" });
+      patch.check_interval_seconds = value;
+    }
+    if (body.latencyThreshold !== undefined) {
+      const value = Number(body.latencyThreshold);
+      if (!Number.isInteger(value) || value < 1 || value > 60000) return res.status(400).json({ error: "latencyThreshold must be 1-60000" });
+      patch.latency_threshold_ms = value;
+    }
+    try {
+      const rows = await supabaseRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.json(mapMonitor(rows[0]));
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Failed to update monitor" });
+    }
+  });
+
+  app.delete("/api/monitors/:id", requireSupabase, async (req: AuthedRequest, res) => {
+    try {
+      const rows = await supabaseRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "DELETE", headers: { Prefer: "return=representation" } });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.status(204).send();
+    } catch {
+      return res.status(500).json({ error: "Failed to delete monitor" });
     }
   });
 
