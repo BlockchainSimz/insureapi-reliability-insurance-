@@ -331,7 +331,8 @@ export async function createApp() {
   return app;
 }
 
-createApp().then(app => {
+if (import.meta.url === new URL(process.argv[1], "file://").href) {
+  createApp().then(app => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log("InsureAPI server listening on port " + PORT);
     });
