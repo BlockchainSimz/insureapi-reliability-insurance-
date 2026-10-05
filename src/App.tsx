@@ -199,8 +199,8 @@ export default function App() {
           <div className="text-right hidden md:block">
             <p className="text-[10px] uppercase tracking-widest opacity-60">System Status</p>
             <div className="flex items-center gap-2 justify-end">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-xs font-mono uppercase">All Systems Operational</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${summary.status === "critical" ? "bg-red-500" : summary.status === "attention" ? "bg-yellow-500" : "bg-green-500"}`} />
+              <span className="text-xs font-mono uppercase">{summary.status === "critical" ? "Critical Issues" : summary.status === "attention" ? "Attention Required" : "All Systems Operational"}</span>
             </div>
           </div>
           <Button 
