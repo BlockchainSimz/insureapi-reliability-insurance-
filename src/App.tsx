@@ -120,6 +120,7 @@ export default function App() {
       const data = await res.json();
       setMonitors(data);
       setLoading(false);
+      void fetchSummary();
     } catch (error) {
       console.error("Failed to fetch monitors", error);
     }
