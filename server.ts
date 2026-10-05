@@ -224,8 +224,12 @@ export async function createApp() {
       if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 120) return res.status(400).json({ error: "Invalid monitor name" });
       patch.name = body.name.trim();
     }
-    if (body.url !== undefined) patch.url = await validateTargetUrl(body.url);
-    if (body.fallbackUrl !== undefined) patch.fallback_url = body.fallbackUrl ? await validateTargetUrl(body.fallbackUrl) : null;
+    try {
+      if (body.url !== undefined) patch.url = await validateTargetUrl(body.url);
+      if (body.fallbackUrl !== undefined) patch.fallback_url = body.fallbackUrl ? await validateTargetUrl(body.fallbackUrl) : null;
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor URL" });
+    }
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled must be boolean" });
       patch.enabled = body.enabled;
@@ -310,7 +314,7 @@ export async function createApp() {
     res.status(501).json({ error: "Notifications are handled by the Phase 3 worker alert outbox and SMTP dispatcher." });
   });
 
-  if (NODE_ENV !== "production" && !process.env.VERCEL) {
+  if (NODE_ENV !== "production") {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
@@ -327,8 +331,7 @@ export async function createApp() {
   return app;
 }
 
-if (!process.env.VERCEL) {
-  createApp().then(app => {
+createApp().then(app => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log("InsureAPI server listening on port " + PORT);
     });
