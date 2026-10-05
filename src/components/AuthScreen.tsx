@@ -2,12 +2,13 @@ import React, { useState } from "react";
 import { Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { authConfigured, signIn } from "@/lib/auth";
+import { authConfigured, signIn, signUp } from "@/lib/auth";
 
 export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState("");
 
   const submit = async (event: React.FormEvent) => {
@@ -36,9 +37,9 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () =>
           <Input required type="email" autoComplete="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
           <Input required type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         </div>
-        {error && <p className="text-sm text-red-700">{error}</p>}
-        <Button disabled={busy} type="submit" className="w-full rounded-none bg-[#141414] text-[#E4E3E0]">{busy ? "AUTHENTICATING..." : "SIGN IN"}</Button>
-      </form>
+        {error && <p className="text-sm text-red-700">{error}</p>}\n        {mode === "signup" && <p className="text-xs opacity-60">Use at least 12 characters. Email confirmation may be required by the organization policy.</p>}
+        <Button disabled={busy} type="submit" className="w-full rounded-none bg-[#141414] text-[#E4E3E0]">{busy ? (mode === "signup" ? "CREATING ACCOUNT..." : "AUTHENTICATING...") : (mode === "signup" ? "CREATE ACCOUNT" : "SIGN IN")}</Button>
+        <button type="button" className="w-full text-xs uppercase tracking-widest underline underline-offset-4" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); }}>\n          {mode === "signin" ? "Create an account" : "Back to sign in"}\n        </button>\n      </form>
     </div>
   );
 }
