@@ -14,7 +14,6 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED === "true" || NODE_ENV === "production";
 const APP_URL = process.env.APP_URL || "";
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
-const FIREBASE_PROJECT_ID = process.env.SUPABASE_PUBLISHABLE_KEY || "";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 type AuthUser = { id: string; email?: string };
