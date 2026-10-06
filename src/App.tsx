@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { authenticatedFetch, authConfigured, getCurrentUser, signOut } from "./lib/auth";
+import { authenticatedFetch, authConfigured, onAuthChange, signOut } from "./lib/auth";
 import AuthScreen from "./components/AuthScreen";
 import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap, HelpCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -61,22 +61,21 @@ export default function App() {
   const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
 
   useEffect(() => {
-    let active = true;
+    let unsubscribe: (() => void) | undefined;
     if (authConfigured) {
-      getCurrentUser().then(user => {
-        if (!active) return;
+      unsubscribe = onAuthChange(user => {
         setAuthenticated(Boolean(user));
         setAuthChecking(false);
-      }).catch(() => {
-        if (active) setAuthChecking(false);
       });
+    } else {
+      setAuthChecking(false);
     }
     const hasSeenOnboarding = localStorage.getItem("insureapi_onboarding_complete");
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
     if (!authConfigured) void fetchMonitors();
-    return () => { active = false; };
+    return () => unsubscribe?.();
   }, []);
 
   useEffect(() => {
