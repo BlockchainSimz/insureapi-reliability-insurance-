@@ -1,3 +1,13 @@
+import { getApp, getApps, initializeApp } from "firebase/app";
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  type User,
+} from "firebase/auth";
+
 export interface AuthSession {
   access_token: string;
   refresh_token: string;
@@ -6,112 +16,111 @@ export interface AuthSession {
   user: { id: string; email?: string };
 }
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
-const STORAGE_KEY = "insureapi_auth_session";
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID as string | undefined,
+};
 
-export const authConfigured = Boolean(SUPABASE_URL && SUPABASE_KEY);
+export const authConfigured = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId &&
+  firebaseConfig.appId
+);
 
-function headers() {
-  if (!SUPABASE_KEY) throw new Error("Supabase publishable key is not configured");
-  return { apikey: SUPABASE_KEY, "Content-Type": "application/json" };
+const app = authConfigured
+  ? (getApps().length ? getApp() : initializeApp(firebaseConfig))
+  : null;
+const auth = app ? getAuth(app) : null;
+
+function mapUser(user: User) {
+  return { id: user.uid, email: user.email || undefined };
 }
 
-function persistSession(data: any): AuthSession {
-  const session: AuthSession = {
-    ...data,
-    expires_at: Math.floor(Date.now() / 1000) + Number(data.expires_in || 3600),
+function authError(error: unknown) {
+  const code = (error as { code?: string })?.code || "";
+  const messages: Record<string, string> = {
+    "auth/invalid-credential": "Invalid email or password",
+    "auth/email-already-in-use": "An account with this email already exists",
+    "auth/weak-password": "Password does not meet Firebase password policy",
+    "auth/too-many-requests": "Too many attempts. Please try again later",
+    "auth/user-disabled": "This account has been disabled",
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  return session;
+  return messages[code] || (error instanceof Error ? error.message : "Authentication failed");
 }
 
 export async function signIn(email: string, password: string): Promise<AuthSession> {
-  if (!SUPABASE_URL) throw new Error("Supabase URL is not configured");
-  const response = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=password", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error_description || data.msg || data.message || "Sign in failed");
-  return persistSession(data);
+  if (!auth) throw new Error("Firebase Authentication is not configured");
+  try {
+    const credential = await signInWithEmailAndPassword(auth, email, password);
+    const accessToken = await credential.user.getIdToken();
+    return {
+      access_token: accessToken,
+      refresh_token: "",
+      expires_in: 3600,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      user: mapUser(credential.user),
+    };
+  } catch (error) {
+    throw new Error(authError(error));
+  }
 }
 
 export function getStoredSession(): AuthSession | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) as AuthSession : null;
-  } catch { return null; }
-}
-
-export function getAccessToken() { return getStoredSession()?.access_token || null; }
-export function signOut() { localStorage.removeItem(STORAGE_KEY); }
-
-async function refreshSession(): Promise<AuthSession | null> {
-  const session = getStoredSession();
-  if (!SUPABASE_URL || !session?.refresh_token) return null;
-
-  const response = await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=refresh_token", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ refresh_token: session.refresh_token }),
-  });
-
-  if (!response.ok) {
-    signOut();
-    return null;
-  }
-  return persistSession(await response.json());
+  const user = auth?.currentUser;
+  return user ? {
+    access_token: "",
+    refresh_token: "",
+    expires_in: 3600,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user: mapUser(user),
+  } : null;
 }
 
 export async function getCurrentUser() {
-  let session = getStoredSession();
-  if (!session?.access_token || !SUPABASE_URL) return null;
+  return auth?.currentUser ? mapUser(auth.currentUser) : null;
+}
 
-  const expiresSoon = session.expires_at <= Math.floor(Date.now() / 1000) + 60;
-  if (expiresSoon) {
-    session = await refreshSession();
-    if (!session) return null;
-  }
+export function getAccessToken() {
+  return null;
+}
 
-  const response = await fetch(SUPABASE_URL + "/auth/v1/user", {
-    headers: { ...headers(), Authorization: "Bearer " + session.access_token },
-  });
-  if (!response.ok) { signOut(); return null; }
-  return await response.json();
+export async function signOut() {
+  if (auth) await firebaseSignOut(auth);
+}
+
+export function onAuthChange(callback: (user: { id: string; email?: string } | null) => void) {
+  if (!auth) return () => undefined;
+  return onAuthStateChanged(auth, user => callback(user ? mapUser(user) : null));
 }
 
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  let session = getStoredSession();
-  if (session?.expires_at && session.expires_at <= Math.floor(Date.now() / 1000) + 60) {
-    session = await refreshSession();
-  }
-
   const requestHeaders = new Headers(init.headers);
-  if (session?.access_token) requestHeaders.set("Authorization", "Bearer " + session.access_token);
-  let response = await fetch(input, { ...init, headers: requestHeaders });
-
-  if (response.status === 401 && session?.refresh_token) {
-    const refreshed = await refreshSession();
-    if (refreshed) {
-      requestHeaders.set("Authorization", "Bearer " + refreshed.access_token);
-      response = await fetch(input, { ...init, headers: requestHeaders });
-    }
+  if (auth?.currentUser) {
+    const token = await auth.currentUser.getIdToken();
+    requestHeaders.set("Authorization", "Bearer " + token);
   }
-  return response;
+  return fetch(input, { ...init, headers: requestHeaders });
 }
 
 export async function signUp(email: string, password: string): Promise<AuthSession | null> {
-  if (!SUPABASE_URL) throw new Error("Supabase URL is not configured");
+  if (!auth) throw new Error("Firebase Authentication is not configured");
   if (password.length < 12) throw new Error("Password must be at least 12 characters");
-  const response = await fetch(SUPABASE_URL + "/auth/v1/signup", {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error_description || data.msg || data.message || "Registration failed");
-  if (!data.access_token) return null;
-  return persistSession(data);
+  try {
+    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    const accessToken = await credential.user.getIdToken();
+    return {
+      access_token: accessToken,
+      refresh_token: "",
+      expires_in: 3600,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      user: mapUser(credential.user),
+    };
+  } catch (error) {
+    throw new Error(authError(error));
+  }
 }
