@@ -38,7 +38,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () =>
       <div className="max-w-md w-full border border-[#141414] p-8 space-y-4">
         <Shield className="w-8 h-8" />
         <h1 className="text-2xl font-black uppercase">Authentication not configured</h1>
-        <p className="text-sm opacity-70">Configure VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY before using the production console.</p>
+        <p className="text-sm opacity-70">Configure the Firebase web configuration variables before using the production console.</p>
       </div>
     </div>
   );
@@ -56,7 +56,7 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () =>
           <Input required minLength={12} type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} placeholder="Password (12+ characters)" value={password} onChange={e => setPassword(e.target.value)} />
         </div>
         {error && <p className="text-sm text-red-700">{error}</p>}
-        {mode === "signup" && <p className="text-xs opacity-60">Email confirmation may be required by the configured Supabase policy.</p>}
+        {mode === "signup" && <p className="text-xs opacity-60">Email confirmation may be required by the configured Firebase Authentication policy.</p>}
         <Button disabled={busy} type="submit" className="w-full rounded-none bg-[#141414] text-[#E4E3E0]">
           {busy ? (mode === "signup" ? "CREATING ACCOUNT..." : "AUTHENTICATING...") : (mode === "signup" ? "CREATE ACCOUNT" : "SIGN IN")}
         </Button>
