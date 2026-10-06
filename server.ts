@@ -14,6 +14,7 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED === "true" || NODE_ENV === "prod
 const APP_URL = process.env.APP_URL || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "";
+const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 type AuthUser = { id: string; email?: string };
 type AuthedRequest = Request & { user?: AuthUser };
@@ -26,7 +27,7 @@ const demoMonitors = [
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function isDemoMode() {
-  return !AUTH_REQUIRED && (!SUPABASE_URL || !SUPABASE_KEY);
+  return DEMO_MODE || (!AUTH_REQUIRED && (!SUPABASE_URL || !SUPABASE_KEY));
 }
 
 function validateEmail(value: unknown) {
