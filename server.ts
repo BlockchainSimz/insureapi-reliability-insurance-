@@ -14,6 +14,7 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED === "true" || NODE_ENV === "prod
 const APP_URL = process.env.APP_URL || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "";
+const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 type AuthUser = { id: string; email?: string };
 type AuthedRequest = Request & { user?: AuthUser };
@@ -26,7 +27,7 @@ const demoMonitors = [
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function isDemoMode() {
-  return !AUTH_REQUIRED && (!SUPABASE_URL || !SUPABASE_KEY);
+  return DEMO_MODE || (!AUTH_REQUIRED && (!SUPABASE_URL || !SUPABASE_KEY));
 }
 
 function validateEmail(value: unknown) {
@@ -131,7 +132,7 @@ function mapMonitor(row: any) {
   };
 }
 
-async function startServer() {
+export async function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -140,13 +141,44 @@ async function startServer() {
   app.use(rateLimit);
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV }));
-  app.get("/ready", (_req, res) => {
-    const ready = isDemoMode() || Boolean(SUPABASE_URL && SUPABASE_KEY);
-    res.status(ready ? 200 : 503).json({ ready, persistence: Boolean(SUPABASE_URL && SUPABASE_KEY), authRequired: AUTH_REQUIRED });
+  app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/ready", async (_req, res) => {
+    const configured = Boolean(SUPABASE_URL && SUPABASE_KEY);
+    if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
+    if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
+    try {
+      const response = await fetch(SUPABASE_URL + "/auth/v1/settings", { headers: { apikey: SUPABASE_KEY } });
+      const authService = response.ok;
+      const ready = AUTH_REQUIRED ? authService : true;
+      return res.status(ready ? 200 : 503).json({ ready, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService });
+    } catch {
+      return res.status(503).json({ ready: false, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: false });
+    }
   });
 
   app.use("/api", requireAuth);
+
+  app.get("/api/dashboard/summary", async (req: AuthedRequest, res) => {
+    try {
+      if (isDemoMode()) {
+        const total = demoMonitors.length;
+        const healthy = demoMonitors.filter(m => m.status === "up").length;
+        const score = demoMonitors.reduce((sum, m) => sum + m.reliabilityScore, 0) / Math.max(total, 1);
+        return res.json({ total, healthy, degraded: demoMonitors.filter(m => m.status === "degraded").length, down: demoMonitors.filter(m => m.status === "down").length, aggregateReliability: Number(score.toFixed(2)), status: healthy === total ? "operational" : "attention" });
+      }
+      const rows = await supabaseRequest(req, "monitors", { method: "GET", headers: { Prefer: "return=representation" } });
+      const monitors = rows || [];
+      const total = monitors.length;
+      const healthy = monitors.filter((m: any) => m.status === "up").length;
+      const degraded = monitors.filter((m: any) => m.status === "degraded").length;
+      const down = monitors.filter((m: any) => m.status === "down").length;
+      const aggregateReliability = total ? monitors.reduce((sum: number, m: any) => sum + Number(m.reliability_score || 0), 0) / total : 100;
+      return res.json({ total, healthy, degraded, down, aggregateReliability: Number(aggregateReliability.toFixed(2)), status: down > 0 ? "critical" : degraded > 0 ? "attention" : "operational" });
+    } catch (error) {
+      console.error("dashboard summary failed", error);
+      return res.status(500).json({ error: "Failed to load dashboard summary" });
+    }
+  });
 
   app.get("/api/monitors", async (req: AuthedRequest, res) => {
     try {
@@ -183,6 +215,52 @@ async function startServer() {
       return res.status(201).json(mapMonitor(created[0]));
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor" });
+    }
+  });
+
+  app.patch("/api/monitors/:id", requireSupabase, async (req: AuthedRequest, res) => {
+    const body = req.body || {};
+    const patch: Record<string, unknown> = {};
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 120) return res.status(400).json({ error: "Invalid monitor name" });
+      patch.name = body.name.trim();
+    }
+    try {
+      if (body.url !== undefined) patch.url = await validateTargetUrl(body.url);
+      if (body.fallbackUrl !== undefined) patch.fallback_url = body.fallbackUrl ? await validateTargetUrl(body.fallbackUrl) : null;
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor URL" });
+    }
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled must be boolean" });
+      patch.enabled = body.enabled;
+    }
+    if (body.checkIntervalSeconds !== undefined) {
+      const value = Number(body.checkIntervalSeconds);
+      if (!Number.isInteger(value) || value < 10 || value > 86400) return res.status(400).json({ error: "checkIntervalSeconds must be 10-86400" });
+      patch.check_interval_seconds = value;
+    }
+    if (body.latencyThreshold !== undefined) {
+      const value = Number(body.latencyThreshold);
+      if (!Number.isInteger(value) || value < 1 || value > 60000) return res.status(400).json({ error: "latencyThreshold must be 1-60000" });
+      patch.latency_threshold_ms = value;
+    }
+    try {
+      const rows = await supabaseRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.json(mapMonitor(rows[0]));
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Failed to update monitor" });
+    }
+  });
+
+  app.delete("/api/monitors/:id", requireSupabase, async (req: AuthedRequest, res) => {
+    try {
+      const rows = await supabaseRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "DELETE", headers: { Prefer: "return=representation" } });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.status(204).send();
+    } catch {
+      return res.status(500).json({ error: "Failed to delete monitor" });
     }
   });
 
@@ -251,12 +329,16 @@ async function startServer() {
     res.status(500).json({ error: "Internal server error" });
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log("InsureAPI server listening on port " + PORT);
-  });
+  return app;
 }
 
-startServer().catch(error => {
-  console.error("Fatal startup error", error);
-  process.exit(1);
-});
+if (import.meta.url === new URL(process.argv[1], "file://").href) {
+  createApp().then(app => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log("InsureAPI server listening on port " + PORT);
+    });
+  }).catch(error => {
+    console.error("Fatal startup error", error);
+    process.exit(1);
+  });
+}

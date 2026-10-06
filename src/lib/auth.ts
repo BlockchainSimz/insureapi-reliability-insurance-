@@ -101,3 +101,17 @@ export async function authenticatedFetch(input: RequestInfo | URL, init: Request
   }
   return response;
 }
+
+export async function signUp(email: string, password: string): Promise<AuthSession | null> {
+  if (!SUPABASE_URL) throw new Error("Supabase URL is not configured");
+  if (password.length < 12) throw new Error("Password must be at least 12 characters");
+  const response = await fetch(SUPABASE_URL + "/auth/v1/signup", {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error_description || data.msg || data.message || "Registration failed");
+  if (!data.access_token) return null;
+  return persistSession(data);
+}

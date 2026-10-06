@@ -2,20 +2,35 @@ import React, { useState } from "react";
 import { Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { authConfigured, signIn } from "@/lib/auth";
+import { authConfigured, signIn, signUp } from "@/lib/auth";
 
 export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState("");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    setBusy(true); setError("");
-    try { await signIn(email.trim(), password); onAuthenticated(); }
-    catch (err) { setError(err instanceof Error ? err.message : "Unable to sign in"); }
-    finally { setBusy(false); }
+    setBusy(true);
+    setError("");
+    try {
+      if (mode === "signup") {
+        const session = await signUp(email.trim(), password);
+        if (!session) {
+          setError("Account created. Check your email to confirm the account, then sign in.");
+          return;
+        }
+      } else {
+        await signIn(email.trim(), password);
+      }
+      onAuthenticated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Authentication failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (!authConfigured) return (
@@ -31,13 +46,23 @@ export default function AuthScreen({ onAuthenticated }: { onAuthenticated: () =>
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0] p-6">
       <form onSubmit={submit} className="max-w-md w-full border border-[#141414] p-8 space-y-6">
-        <div className="space-y-2"><Shield className="w-8 h-8" /><h1 className="text-3xl font-black uppercase">InsureAPI</h1><p className="text-xs uppercase tracking-widest opacity-60">Secure operator sign-in</p></div>
+        <div className="space-y-2">
+          <Shield className="w-8 h-8" />
+          <h1 className="text-3xl font-black uppercase">InsureAPI</h1>
+          <p className="text-xs uppercase tracking-widest opacity-60">Secure operator {mode === "signin" ? "sign-in" : "registration"}</p>
+        </div>
         <div className="space-y-4">
           <Input required type="email" autoComplete="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
-          <Input required type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
+          <Input required minLength={12} type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} placeholder="Password (12+ characters)" value={password} onChange={e => setPassword(e.target.value)} />
         </div>
         {error && <p className="text-sm text-red-700">{error}</p>}
-        <Button disabled={busy} type="submit" className="w-full rounded-none bg-[#141414] text-[#E4E3E0]">{busy ? "AUTHENTICATING..." : "SIGN IN"}</Button>
+        {mode === "signup" && <p className="text-xs opacity-60">Email confirmation may be required by the configured Supabase policy.</p>}
+        <Button disabled={busy} type="submit" className="w-full rounded-none bg-[#141414] text-[#E4E3E0]">
+          {busy ? (mode === "signup" ? "CREATING ACCOUNT..." : "AUTHENTICATING...") : (mode === "signup" ? "CREATE ACCOUNT" : "SIGN IN")}
+        </Button>
+        <button type="button" className="w-full text-xs uppercase tracking-widest underline underline-offset-4" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); }}>
+          {mode === "signin" ? "Create an account" : "Back to sign in"}
+        </button>
       </form>
     </div>
   );

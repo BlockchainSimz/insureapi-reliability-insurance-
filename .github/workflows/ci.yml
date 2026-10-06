@@ -19,9 +19,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install --ignore-scripts
+      - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
+      - run: npm run test:worker
       - run: npm run build
 
   security:
@@ -33,6 +34,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install --ignore-scripts
+      - run: npm ci --ignore-scripts
       - run: npm audit fix --ignore-scripts || true
       - run: npm audit --audit-level=high
