@@ -150,15 +150,14 @@ async function firestoreRequest(req: AuthedRequest, resource: string, init: Requ
     }
     const limit = Number(params.get("limit") || 0);
     if (limit > 0) query = query.limit(Math.min(limit, 100));
-    const snap = docId
-      ? await firestore.collection(collectionName).doc(docId).get()
-      : await query.get();
     if (docId) {
+      const snap = await firestore.collection(collectionName).doc(docId).get();
       if (!snap.exists) return [];
       const data = snap.data() || {};
       if (collectionName === "monitors" && data.owner_id !== req.user.id) return [];
       return [{ id: snap.id, ...data }];
     }
+    const snap = await query.get();
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   }
 
