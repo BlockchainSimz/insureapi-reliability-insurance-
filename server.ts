@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken } from "./src/server/firebase-admin.js";
+import type { Query } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -131,7 +132,7 @@ async function firestoreRequest(req: AuthedRequest, resource: string, init: Requ
   }
 
   if (method === "GET") {
-    let query: FirebaseFirestore.Query = firestore.collection(collectionName);
+    let query: Query = firestore.collection(collectionName);
     if (collectionName === "monitors") query = query.where("owner_id", "==", req.user.id);
     if (collectionName !== "monitors" && params.get("monitor_id")) {
       const monitorId = decodeQueryValue(params.get("monitor_id")!.replace(/^eq\./, ""));
