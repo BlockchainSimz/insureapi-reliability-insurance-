@@ -12,7 +12,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build /app/package.json /app/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.ts ./server.ts
