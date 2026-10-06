@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { classifyCheck } from "./src/monitor/classification.js";
 import { firestore, firebaseAdminConfigured } from "./src/server/firebase-admin.js";
+import type { Query } from "firebase-admin/firestore";
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
 const SMTP_HOST = process.env.SMTP_HOST || "";
@@ -34,7 +35,7 @@ async function db(resource: string, init: RequestInit = {}) {
   }
 
   if (method === "GET") {
-    let query: FirebaseFirestore.Query = firestore.collection(collectionName);
+    let query: Query = firestore.collection(collectionName);
     for (const [key, raw] of params.entries()) {
       if (["order", "limit", "select"].includes(key)) continue;
       const match = raw.match(/^(eq|gte|lte)\.(.*)$/);
