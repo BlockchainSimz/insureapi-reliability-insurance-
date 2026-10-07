@@ -194,8 +194,7 @@ async function dispatchAlerts() {
   const alerts = await db("monitor_alerts?status=eq.pending&next_attempt_at=lte." + encodeURIComponent(now) + "&order=created_at.asc&limit=10");
   for (const alert of alerts) {
     try {
-      await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "
-Monitor ID: " + alert.monitor_id });
+      await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
       await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", body: JSON.stringify({
         status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null
       }) });
