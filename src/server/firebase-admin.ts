@@ -2,9 +2,9 @@ import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 
-const projectId = process.env.FIREBASE_PROJECT_ID || "";
-const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
-function normalizePrivateKey(raw: string) {
+const projectId = normalizeConfigValue(process.env.FIREBASE_PROJECT_ID || "");
+const clientEmail = normalizeConfigValue(process.env.FIREBASE_CLIENT_EMAIL || "");
+function normalizeConfigValue(raw: string) {\n  let value = raw.trim();\n  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);\n  return value.trim();\n}\n\nfunction normalizePrivateKey(raw: string) {
   let value = raw.trim();
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     value = value.slice(1, -1);
@@ -25,6 +25,25 @@ const app = firebaseAdminConfigured
 export const firebaseAuth = app ? getAuth(app) : null;
 export const firestore = app ? getFirestore(app) : null;
 export { FieldValue };
+
+export function getFirebaseAdminIdentity() {
+  return {
+    projectId,
+    clientEmail,
+    keyPresent: Boolean(privateKey),
+    keyFormat: /^-----BEGIN PRIVATE KEY-----\\n[\\s\\S]+\\n-----END PRIVATE KEY-----$/.test(privateKey),
+    keyLength: privateKey.length,
+  };
+}
+
+export async function verifyFirestoreConnection() {
+  if (!firestore) throw new Error("Firebase Admin is not configured");
+  await firestore.collection("_health").doc("firebase-admin").set({
+    checked_at: new Date().toISOString(),
+    project_id: projectId,
+  });
+  return getFirebaseAdminIdentity();
+}
 
 export async function verifyFirebaseIdToken(token: string) {
   if (!firebaseAuth) return null;
