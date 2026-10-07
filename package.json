@@ -60,6 +60,9 @@
   },
   "overrides": {
     "protobufjs": "7.6.6",
-    "ws": "8.22.0"
+    "ws": "8.22.0",
+    "@grpc/grpc-js": "1.14.5",
+    "esbuild": "0.28.2",
+    "uuid": "11.1.1"
   }
 }
