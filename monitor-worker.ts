@@ -2,7 +2,7 @@ import axios from "axios";
 import nodemailer from "nodemailer";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { classifyCheck } from "./src/monitor/classification.js";
-import { firestore, firebaseAdminConfigured } from "./src/server/firebase-admin.js";
+import { firestore, firebaseAdminConfigured, verifyFirestoreConnection } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
 
 const ONCE = process.argv.includes("--once");
@@ -248,7 +248,7 @@ export function startMonitorWorker() {
     console.warn("[monitor-worker] disabled: Firebase Admin credentials are required");
     return () => {};
   }
-  void tick();
+  void verifyFirestoreConnection()\n    .then(() => console.log("[monitor-worker] Firestore connectivity verified"))\n    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", error));\n  void tick();
   if (ONCE) return () => {};
   const timer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
   console.log("[monitor-worker] started");
