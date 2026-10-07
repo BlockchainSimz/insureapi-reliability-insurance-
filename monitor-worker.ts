@@ -37,7 +37,7 @@ function parseValue(raw: string) {
   return decoded;
 }
 
-async function db(resource: string, init: RequestInit = {}) {
+async function db(resource: string, init: RequestInit = {}): Promise<any> {
   if (!firebaseAdminConfigured || !firestore) throw new Error("Firebase Admin is not configured");
   const [path, queryString = ""] = resource.split("?");
   const segments = path.split("/").filter(Boolean);
