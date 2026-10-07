@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
-import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken } from "./src/server/firebase-admin.js";
+import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -405,6 +405,19 @@ export async function createApp() {
 if (import.meta.url === new URL(process.argv[1], "file://").href) {
   createApp().then(app => {
     app.listen(PORT, "0.0.0.0", () => {
+    const identity = getFirebaseAdminIdentity();
+    console.log("[firebase] config", JSON.stringify({
+      projectId: identity.projectId,
+      clientEmail: identity.clientEmail,
+      keyPresent: identity.keyPresent,
+      keyFormat: identity.keyFormat,
+      keyLength: identity.keyLength,
+    }));
+    if (firebaseAdminConfigured && firestore) {
+      void verifyFirestoreConnection()
+        .then(() => console.log("[firebase] Firestore connectivity verified"))
+        .catch((error) => console.error("[firebase] Firestore connectivity failed", error instanceof Error ? error.message : String(error)));
+    }
       console.log("InsureAPI server listening on port " + PORT);
     });
   }).catch(error => {
