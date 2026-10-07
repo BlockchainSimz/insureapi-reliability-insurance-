@@ -4,8 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
-import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken } from "./src/server/firebase-admin.js";
-import type { Query } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,6 +100,93 @@ function requireFirebase(req: AuthedRequest, res: Response, next: NextFunction) 
   next();
 }
 
+async function monitorOwnedBy(req: AuthedRequest, monitorId: string) {
+  if (isDemoMode()) return true;
+  if (!firestore || !req.user) return false;
+  const snap = await firestore.collection("monitors").doc(monitorId).get();
+  return snap.exists && snap.data()?.owner_id === req.user.id;
+}
+
+function parseValue(value: string) {
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}) {
+  if (!firestore || !req.user) throw new Error("Firebase is not configured");
+  const [path, queryString = ""] = resource.split("?");
+  const segments = path.split("/").filter(Boolean);
+  const collectionName = segments[0];
+  const params = new URLSearchParams(queryString);
+  const method = init.method || "GET";
+  const body = init.body ? JSON.parse(String(init.body)) : undefined;
+
+  if (collectionName === "rpc" && segments[1] === "calculate_monitor_reliability") {
+    const monitorId = body?.p_monitor_id;
+    const hours = Number(body?.p_window_hours || 24);
+    if (!monitorId || !(await monitorOwnedBy(req, monitorId))) throw new Error("Monitor not found");
+    const cutoff = Date.now() - hours * 3600000;
+    const snap = await firestore.collection("monitor_checks").where("monitor_id", "==", monitorId).get();
+    const checks = snap.docs.map(d => d.data()).filter(row => Date.parse(String(row.checked_at || "")) >= cutoff);
+    return checks.length ? Number(((checks.filter(row => row.ok).length / checks.length) * 100).toFixed(2)) : 100;
+  }
+
+  const idMatch = params.get("id")?.match(/^eq\.(.+)$/);
+  if (method === "GET") {
+    let query: Query = firestore.collection(collectionName);
+    if (collectionName === "monitors" && !isDemoMode()) query = query.where("owner_id", "==", req.user.id);
+    const monitorFilter = params.get("monitor_id")?.match(/^eq\.(.+)$/);
+    if (monitorFilter && !isDemoMode() && !(await monitorOwnedBy(req, decodeURIComponent(monitorFilter[1])))) throw new Error("Monitor not found");
+    for (const [key, raw] of params.entries()) {
+      if (["order","limit","select"].includes(key)) continue;
+      const match = raw.match(/^(eq|gte|lte)\.(.*)$/);
+      if (match && key !== "monitor_id") query = query.where(key, match[1] === "eq" ? "==" : match[1] === "gte" ? ">=" : "<=", parseValue(match[2]));
+    }
+    const snap = await query.get();
+    let rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const order = params.get("order");
+    if (order) {
+      const [field, direction = "asc"] = order.split(".");
+      rows.sort((a: any,b: any) => {
+        const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+        const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+        const left = typeof av === "string" ? Date.parse(av) || av : av;
+        const right = typeof bv === "string" ? Date.parse(bv) || bv : bv;
+        return left === right ? 0 : (left > right ? 1 : -1) * (direction === "desc" ? -1 : 1);
+      });
+    }
+    const limit = Number(params.get("limit") || 0);
+    if (limit > 0) rows = rows.slice(0, Math.min(limit, 100));
+    return rows;
+  }
+  if (method === "POST") {
+    const data = { ...(body || {}) };
+    if (collectionName === "monitors") data.owner_id = req.user.id;
+    if (collectionName === "monitor_checks" && !data.checked_at) data.checked_at = new Date().toISOString();
+    if (collectionName === "monitor_incidents" && !data.started_at) data.started_at = new Date().toISOString();
+    if (collectionName === "monitor_alerts" && !data.created_at) data.created_at = new Date().toISOString();
+    const ref = await firestore.collection(collectionName).add(data);
+    return [{ id: ref.id, ...data }];
+  }
+  if (method === "PATCH" || method === "DELETE") {
+    if (!idMatch) throw new Error("Firebase update requires a document id");
+    const id = decodeURIComponent(idMatch[1]);
+    const ref = firestore.collection(collectionName).doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return [];
+    const data = snap.data() || {};
+    if (collectionName === "monitors" && data.owner_id !== req.user.id) throw new Error("Monitor not found");
+    if (collectionName !== "monitors" && data.monitor_id && !(await monitorOwnedBy(req, String(data.monitor_id)))) throw new Error("Monitor not found");
+    if (method === "PATCH") {
+      await ref.update(body || {});
+      const updated = await ref.get();
+      return updated.exists ? [{ id: updated.id, ...updated.data() }] : [];
+    }
+    await ref.delete();
+    return [{ id }];
+  }
+  throw new Error("Unsupported Firebase request");
+}
+
 function mapMonitor(row: any) {
   return {
     id: row.id,
@@ -117,21 +202,7 @@ function mapMonitor(row: any) {
   };
 }
 
-async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}) {
-  if (!firestore || !req.user) throw new Error("Firebase is not configured");
-  const [path, queryString = ""] = resource.split("?");
-  const segments = path.split("/").filter(Boolean);
-  const collectionName = segments[0];
-  const docId = segments[1];
-  const params = new URLSearchParams(queryString);
-  const method = init.method || "GET";
-  const body = init.body ? JSON.parse(String(init.body)) : undefined;
-
-  if (collectionName === "rpc" && segments[1] === "calculate_monitor_reliability") {
-    const monitorId = body?.p_monitor_id;
-    const windowHours = Number(body?.p_window_hours || 24);
-    if (!monitorId || !(await monitorOwnedBy(req, monitorId))) throw new Error("Monitor not found");
-    const export async function createApp() {
+export async function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
