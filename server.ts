@@ -113,7 +113,7 @@ function parseValue(value: string) {
   try { return JSON.parse(value); } catch { return value; }
 }
 
-async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}) {
+async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}): Promise<any> {
   if (!firestore || !req.user) throw new Error("Firebase is not configured");
   const [path, queryString = ""] = resource.split("?");
   const segments = path.split("/").filter(Boolean);
