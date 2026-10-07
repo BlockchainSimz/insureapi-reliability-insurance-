@@ -54,7 +54,7 @@ export async function verifyFirebaseIdToken(token: string) {
   }
 }
 
-export async function verifyFirestoreConnection() {\n  if (!firestore) throw new Error("Firebase Admin is not configured");\n  await firestore.collection("_health").doc("connectivity").set({ checked_at: new Date().toISOString() });\n  return true;\n}\n\nexport function requireFirestore() {
+export async function verifyFirestoreConnection() {\n  if (!firestore) throw new Error("Firebase Admin is not configured");\n  await firestore.collection("_health").doc("connectivity").set({ checked_at: new Date().toISOString() });\n  return true;\n}\n\nexport async function verifyFirestoreConnection() {\n  if (!firestore) throw new Error("Firebase Admin is not configured");\n  await firestore.collection("_health").doc("connectivity").set({ checked_at: new Date().toISOString() });\n  return true;\n}\n\nexport function requireFirestore() {
   if (!firestore) throw new Error("Firebase Admin is not configured");
   return firestore;
 }
