@@ -4,6 +4,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
+import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken } from "./src/server/firebase-admin.js";
+import type { Query } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
