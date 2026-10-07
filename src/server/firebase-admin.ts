@@ -4,7 +4,15 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 
 const projectId = process.env.FIREBASE_PROJECT_ID || "";
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
-const privateKey = (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+function normalizePrivateKey(raw: string) {
+  let value = raw.trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+  value = value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\u003d/g, "=");
+  return value.replace(/\\r?\\n/g, "\n").trim();
+}
+const privateKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY || "");
 
 export const firebaseAdminConfigured = Boolean(projectId && clientEmail && privateKey);
 
