@@ -15,6 +15,7 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED === "true" || NODE_ENV === "production";
 const APP_URL = process.env.APP_URL || "";
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
+
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 type AuthUser = { id: string; email?: string };
@@ -101,14 +102,19 @@ function requireFirebase(req: AuthedRequest, res: Response, next: NextFunction) 
   next();
 }
 
-function decodeQueryValue(value: string) {
-  return decodeURIComponent(value);
-}
-
-async function monitorOwnedBy(req: AuthedRequest, id: string) {
-  if (!firestore || !req.user) return false;
-  const snap = await firestore.collection("monitors").doc(id).get();
-  return snap.exists && snap.data()?.owner_id === req.user.id;
+function mapMonitor(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    status: row.status,
+    latency: row.latency_ms,
+    lastChecked: row.last_checked_at,
+    reliabilityScore: Number(row.reliability_score),
+    fallbackUrl: row.fallback_url || "",
+    alertEmail: row.alert_email || "",
+    history: []
+  };
 }
 
 async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}) {
