@@ -194,7 +194,8 @@ async function dispatchAlerts() {
   const alerts = await db("monitor_alerts?status=eq.pending&next_attempt_at=lte." + encodeURIComponent(now) + "&order=created_at.asc&limit=10");
   for (const alert of alerts) {
     try {
-      await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
+      await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "
+Monitor ID: " + alert.monitor_id });
       await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", body: JSON.stringify({
         status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null
       }) });
@@ -257,7 +258,9 @@ export function startMonitorWorker() {
     keyLength: identity.keyLength,
   }));
   void verifyFirestoreConnection()
-    .then(() => console.log("[monitor-worker] Firestore connectivity verified"))\n    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", error));\n  void tick();
+    .then(() => console.log("[monitor-worker] Firestore connectivity verified"))
+    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", error));
+  void tick();
   if (ONCE) return () => {};
   const timer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
   console.log("[monitor-worker] started");
