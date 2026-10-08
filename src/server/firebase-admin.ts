@@ -116,6 +116,16 @@ function resolveServiceAccount() {
 }
 
 const serviceAccount = resolveServiceAccount();
+
+function safeErrorMessage(error: unknown, maxLength = 300) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/-----BEGIN [^-]+-----[\\s\\S]*?-----END [^-]+-----/g, "[REDACTED_PRIVATE_KEY]")
+    .replace(/"private_key"\\s*:\\s*"[^"]*"/gi, '"private_key":"[REDACTED]"')
+    .replace(/"privateKey"\\s*:\\s*"[^"]*"/gi, '"privateKey":"[REDACTED]"')
+    .replace(/(FIREBASE_PRIVATE_KEY(?:_BASE64)?|FIREBASE_SERVICE_ACCOUNT_JSON(?:_BASE64)?)=([^\\s,]+)/gi, "$1=[REDACTED]")
+    .slice(0, maxLength);
+
 const projectId = normalizeConfigValue(
   (typeof serviceAccount?.project_id === "string" ? serviceAccount.project_id : process.env.FIREBASE_PROJECT_ID) || ""
 );
@@ -162,6 +172,10 @@ export function getFirebaseAdminIdentity() {
     keyFormat: /^-----BEGIN PRIVATE KEY-----\n[\s\S]+\n-----END PRIVATE KEY-----$/.test(privateKey),
     keyLength: privateKey.length,
   };
+}
+
+export function sanitizeFirebaseError(error: unknown) {
+  return safeErrorMessage(error);
 }
 
 export async function verifyFirestoreConnection() {
