@@ -3,6 +3,12 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { createPrivateKey } from "node:crypto";
 
+type ServiceAccount = {
+  project_id?: unknown;
+  client_email?: unknown;
+  private_key?: unknown;
+};
+
 function normalizeConfigValue(raw: string) {
   let value = raw.trim().replace(/^\uFEFF/, "");
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
@@ -21,20 +27,39 @@ function decodeBase64Utf8(value: string) {
   }
 }
 
-function normalizePrivateKey(raw: string) {
+function parseServiceAccount(raw: string): ServiceAccount | null {
   let value = normalizeConfigValue(raw);
-
-  // Accept a full service-account JSON object.
-  if (value.startsWith("{")) {
+  for (let i = 0; i < 3; i += 1) {
+    if (!value.startsWith("{")) break;
     try {
-      const parsed = JSON.parse(value) as { private_key?: unknown };
-      if (typeof parsed.private_key === "string") value = parsed.private_key;
+      const parsed = JSON.parse(value) as ServiceAccount;
+      if (typeof parsed.project_id === "string" || typeof parsed.client_email === "string" || typeof parsed.private_key === "string") {
+        return parsed;
+      }
     } catch {
-      // Continue with the original value.
+      break;
     }
   }
 
-  // Decode repeated JSON/secret-manager escaping.
+  const decoded = decodeBase64Utf8(value);
+  if (decoded.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(decoded) as ServiceAccount;
+      if (typeof parsed.project_id === "string" || typeof parsed.client_email === "string" || typeof parsed.private_key === "string") {
+        return parsed;
+      }
+    } catch {
+      // Not a service-account JSON value.
+    }
+  }
+  return null;
+}
+
+function normalizePrivateKey(raw: string) {
+  let value = normalizeConfigValue(raw);
+  const account = parseServiceAccount(value);
+  if (account && typeof account.private_key === "string") value = account.private_key;
+
   for (let i = 0; i < 4; i += 1) {
     value = value
       .replace(/\\u003d/gi, "=")
@@ -59,42 +84,50 @@ function normalizePrivateKey(raw: string) {
 
   value = value.replace(/\\r?\\n/g, "\n").replace(/\r\n?/g, "\n").trim();
 
-  // If the secret is base64-encoded, decode either a PEM or a full JSON credential.
   if (!value.includes("-----BEGIN ")) {
     const decoded = decodeBase64Utf8(value);
-    if (decoded.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(decoded) as { private_key?: unknown };
-        if (typeof parsed.private_key === "string") {
-          value = normalizePrivateKey(parsed.private_key);
-        }
-      } catch {
-        // Leave unchanged.
-      }
+    const accountFromBase64 = parseServiceAccount(decoded);
+    if (accountFromBase64 && typeof accountFromBase64.private_key === "string") {
+      value = normalizePrivateKey(accountFromBase64.private_key);
     } else if (decoded.includes("-----BEGIN ")) {
       value = decoded;
     }
   }
 
-  // Extract a PEM block if a secret manager added surrounding text.
   const match = value.match(/-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----/);
   if (match) value = match[0];
 
   return value.trim();
 }
 
-function resolvePrivateKey() {
-  const explicitBase64 = normalizeConfigValue(process.env.FIREBASE_PRIVATE_KEY_BASE64 || "");
-  if (explicitBase64) {
-    const decoded = decodeBase64Utf8(explicitBase64);
-    if (decoded) return normalizePrivateKey(decoded);
+function resolveServiceAccount() {
+  const candidates = [
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64,
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+    process.env.FIREBASE_PROJECT_ID,
+    process.env.FIREBASE_PRIVATE_KEY,
+  ].filter((value): value is string => Boolean(value?.trim()));
+
+  for (const raw of candidates) {
+    const account = parseServiceAccount(raw);
+    if (account) return account;
   }
-  return normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY || "");
+  return null;
 }
 
-const projectId = normalizeConfigValue(process.env.FIREBASE_PROJECT_ID || "");
-const clientEmail = normalizeConfigValue(process.env.FIREBASE_CLIENT_EMAIL || "");
-const privateKey = resolvePrivateKey();
+const serviceAccount = resolveServiceAccount();
+const projectId = normalizeConfigValue(
+  (typeof serviceAccount?.project_id === "string" ? serviceAccount.project_id : process.env.FIREBASE_PROJECT_ID) || ""
+);
+const clientEmail = normalizeConfigValue(
+  (typeof serviceAccount?.client_email === "string" ? serviceAccount.client_email : process.env.FIREBASE_CLIENT_EMAIL) || ""
+);
+const privateKey = normalizePrivateKey(
+  (typeof serviceAccount?.private_key === "string" ? serviceAccount.private_key : "") ||
+  process.env.FIREBASE_PRIVATE_KEY_BASE64 ||
+  process.env.FIREBASE_PRIVATE_KEY ||
+  ""
+);
 
 export const firebaseAdminConfigured = Boolean(projectId && clientEmail && privateKey);
 
@@ -104,7 +137,7 @@ function assertPrivateKeyFormat(value: string) {
     createPrivateKey({ key: value, format: "pem", type: "pkcs8" });
   } catch {
     throw new Error(
-      "Firebase Admin private key is present but invalid. Store the exact private_key from the Firebase service-account JSON, or provide its base64 encoding in FIREBASE_PRIVATE_KEY_BASE64."
+      "Firebase Admin private key is present but invalid. Provide the exact Firebase service-account credential via FIREBASE_SERVICE_ACCOUNT_JSON_BASE64, or the private key via FIREBASE_PRIVATE_KEY_BASE64."
     );
   }
 }
