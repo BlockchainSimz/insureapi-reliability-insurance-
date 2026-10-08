@@ -40,7 +40,27 @@ function normalizePrivateKey(raw: string) {
     }
   }
 
-  return value.replace(/\\r?\\n/g, "\n").trim();
+  value = value.replace(/\\r?\\n/g, "\n").trim();
+
+  // Some secret managers store the entire credential (or PEM) as base64.
+  // Decode only when the normalized value is not already a PEM.
+  if (!value.startsWith("-----BEGIN ")) {
+    try {
+      const decoded = Buffer.from(value, "base64").toString("utf8").trim();
+      if (decoded.startsWith("{")) {
+        const parsed = JSON.parse(decoded) as { private_key?: unknown };
+        if (typeof parsed.private_key === "string") {
+          value = normalizePrivateKey(parsed.private_key);
+        }
+      } else if (decoded.startsWith("-----BEGIN ")) {
+        value = decoded;
+      }
+    } catch {
+      // Leave unchanged; Firebase Admin will reject an invalid credential.
+    }
+  }
+
+  return value.trim();
 }
 
 const projectId = normalizeConfigValue(process.env.FIREBASE_PROJECT_ID || "");
