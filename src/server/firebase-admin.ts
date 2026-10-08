@@ -12,7 +12,34 @@ function normalizeConfigValue(raw: string) {
 
 function normalizePrivateKey(raw: string) {
   let value = normalizeConfigValue(raw);
-  value = value.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\u003d/g, "=");
+
+  // Railway secrets can contain a PEM directly, escaped newlines, a JSON-encoded
+  // private key, or the full service-account JSON. Normalize all supported forms.
+  if (value.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(value) as { private_key?: unknown };
+      if (typeof parsed.private_key === "string") value = parsed.private_key;
+    } catch {
+      // Keep the original value; PEM validation below will fail safely.
+    }
+  }
+
+  for (let i = 0; i < 3; i += 1) {
+    value = value
+      .replace(/\\u003d/gi, "=")
+      .replace(/\\r/g, "\r")
+      .replace(/\\n/g, "\n");
+  }
+
+  if (value.startsWith('\"') && value.endsWith('\"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") value = parsed;
+    } catch {
+      // Leave unchanged.
+    }
+  }
+
   return value.replace(/\\r?\\n/g, "\n").trim();
 }
 
