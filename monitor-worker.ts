@@ -2,7 +2,7 @@ import axios from "axios";
 import nodemailer from "nodemailer";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { classifyCheck } from "./src/monitor/classification.js";
-import { firestore, firebaseAdminConfigured, verifyFirestoreConnection, getFirebaseAdminIdentity } from "./src/server/firebase-admin.js";
+import { firestore, firebaseAdminConfigured, verifyFirestoreConnection, getFirebaseAdminIdentity, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
 
 const ONCE = process.argv.includes("--once");
@@ -237,7 +237,7 @@ async function tick() {
     }
     await dispatchAlerts();
   } catch (error) {
-    console.error("[monitor-worker] tick failed", error);
+    console.error("[monitor-worker] tick failed", sanitizeFirebaseError(error));
   } finally {
     running = false;
   }
@@ -258,7 +258,7 @@ export function startMonitorWorker() {
   }));
   void verifyFirestoreConnection()
     .then(() => console.log("[monitor-worker] Firestore connectivity verified"))
-    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", error));
+    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", sanitizeFirebaseError(error)));
   void tick();
   if (ONCE) return () => {};
   const timer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
