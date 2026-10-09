@@ -1,68 +1,22 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { authenticatedFetch } from "./auth";
 
-function getAI() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("AI insights are not configured on the server yet.");
-  return new GoogleGenAI({ apiKey });
+async function requestAI<T>(endpoint: string, payload: unknown): Promise<T> {
+  const response = await authenticatedFetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof data.error === "string" ? data.error : "AI request failed");
+  }
+  return data as T;
 }
 
-export async function predictOutage(history: any[]) {
-  const prompt = `Analyze the following API performance history and predict the likelihood of an outage in the next 24 hours. 
-  Performance History: ${JSON.stringify(history)}
-  
-  Consider patterns like increasing latency, intermittent timeouts, and historical degradation.
-  Provide a probability (0-100), a reasoning, and recommended preventive actions.`;
-
-  const response = await getAI().models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          probability: { type: Type.NUMBER },
-          reasoning: { type: Type.STRING },
-          recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-          riskLevel: { type: Type.STRING, enum: ["Low", "Medium", "High", "Critical"] }
-        },
-        required: ["probability", "reasoning", "recommendations", "riskLevel"]
-      }
-    }
-  });
-
-  return JSON.parse(response.text);
+export async function predictOutage(history: unknown[]) {
+  return requestAI("/api/ai/predict-outage", { history });
 }
 
 export async function quantifyDamages(downtimeMinutes: number, businessContext: string) {
-  const prompt = `Quantify the financial damages for an API outage lasting ${downtimeMinutes} minutes.
-  Business Context: ${businessContext}
-  
-  Provide an estimated loss in USD, a breakdown of direct vs indirect costs, and a justification for an insurance claim.`;
-
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          estimatedLoss: { type: Type.NUMBER },
-          breakdown: {
-            type: Type.OBJECT,
-            properties: {
-              directLoss: { type: Type.NUMBER },
-              indirectLoss: { type: Type.NUMBER },
-              reputationDamage: { type: Type.NUMBER }
-            }
-          },
-          claimJustification: { type: Type.STRING }
-        },
-        required: ["estimatedLoss", "breakdown", "claimJustification"]
-      }
-    }
-  });
-
-  return JSON.parse(response.text);
+  return requestAI("/api/ai/quantify-damages", { downtimeMinutes, businessContext });
 }
