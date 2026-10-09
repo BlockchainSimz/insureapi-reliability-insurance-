@@ -125,6 +125,7 @@ function safeErrorMessage(error: unknown, maxLength = 300) {
     .replace(/"privateKey"\\s*:\\s*"[^"]*"/gi, '"privateKey":"[REDACTED]"')
     .replace(/(FIREBASE_PRIVATE_KEY(?:_BASE64)?|FIREBASE_SERVICE_ACCOUNT_JSON(?:_BASE64)?)=([^\\s,]+)/gi, "$1=[REDACTED]")
     .slice(0, maxLength);
+}
 
 const projectId = normalizeConfigValue(
   (typeof serviceAccount?.project_id === "string" ? serviceAccount.project_id : process.env.FIREBASE_PROJECT_ID) || ""
