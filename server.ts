@@ -390,8 +390,26 @@ export async function createApp() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath, { maxAge: "1h" }));
-    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
+    app.use(express.static(distPath, {
+      maxAge: "1h",
+      setHeaders(res, filePath) {
+        // HTML must always revalidate so a new deployment cannot leave browsers
+        // running an old entry-point against freshly fingerprinted assets.
+        if (path.basename(filePath).toLowerCase() === "index.html") {
+          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        } else if (filePath.includes(path.sep + "assets" + path.sep)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      }
+    }));
+    app.get("*", (_req, res) => {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+      res.sendFile(path.join(distPath, "index.html"));
+    });
   }
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
