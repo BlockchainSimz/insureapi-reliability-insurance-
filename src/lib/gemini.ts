@@ -1,6 +1,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+function getAI() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("AI insights are not configured on the server yet.");
+  return new GoogleGenAI({ apiKey });
+}
 
 export async function predictOutage(history: any[]) {
   const prompt = `Analyze the following API performance history and predict the likelihood of an outage in the next 24 hours. 
@@ -9,7 +13,7 @@ export async function predictOutage(history: any[]) {
   Consider patterns like increasing latency, intermittent timeouts, and historical degradation.
   Provide a probability (0-100), a reasoning, and recommended preventive actions.`;
 
-  const response = await ai.models.generateContent({
+  const response = await getAI().models.generateContent({
     model: "gemini-3-flash-preview",
     contents: prompt,
     config: {
