@@ -4,6 +4,7 @@ import App from './App.tsx';
 import './index.css';
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  declare props: Readonly<{ children: ReactNode }>;
   state = { error: null as Error | null };
 
   static getDerivedStateFromError(error: Error) {
