@@ -116,12 +116,28 @@ export default function App() {
   const fetchMonitors = async () => {
     try {
       const res = await authenticatedFetch("/api/monitors");
-      const data = await res.json();
-      setMonitors(data);
-      setLoading(false);
+      const data: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message =
+          data && typeof data === "object" && "error" in data && typeof data.error === "string"
+            ? data.error
+            : "Monitor request failed (HTTP " + res.status + ")";
+        throw new Error(message);
+      }
+      const rows = Array.isArray(data)
+        ? data
+        : data && typeof data === "object" && "data" in data && Array.isArray(data.data)
+          ? data.data
+          : null;
+      if (!rows) throw new Error("The monitor API returned an unexpected response format.");
+      setMonitors(rows as Monitor[]);
       void fetchSummary();
     } catch (error) {
       console.error("Failed to fetch monitors", error);
+      setMonitors([]);
+      toast.error(error instanceof Error ? error.message : "Unable to load monitors");
+    } finally {
+      setLoading(false);
     }
   };
 
