@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
-import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection } from "./src/server/firebase-admin.js";
+import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -215,7 +215,7 @@ export async function createApp() {
 
   app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
   app.get("/ready", async (_req, res) => {
-    const configured = Boolean(FIREBASE_PROJECT_ID && firebaseAdminConfigured && firebaseAuth && firestore);
+    const configured = Boolean(getFirebaseAdminIdentity().projectId && firebaseAdminConfigured && firebaseAuth && firestore);
     if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
     if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
     try {
@@ -421,7 +421,7 @@ if (import.meta.url === new URL(process.argv[1], "file://").href) {
       console.log("InsureAPI server listening on port " + PORT);
     });
   }).catch(error => {
-    console.error("Fatal startup error", error);
+    console.error("Fatal startup error", sanitizeFirebaseError(error));
     process.exit(1);
   });
 }
