@@ -29,6 +29,8 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
 }
 
 const rootElement = document.getElementById('root');
+if (rootElement) rootElement.dataset.appMounted = 'true';
+
 if (!rootElement) {
   document.body.innerHTML = '<main style="padding:24px;font:16px system-ui;color:#141414">InsureAPI could not start: page root is missing.</main>';
 } else {
