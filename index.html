@@ -6,13 +6,40 @@
     <meta name="theme-color" content="#E4E3E0" />
     <title>InsureAPI Reliability</title>
     <script>
+      function showStartupFailure(title, detail) {
+        var root = document.getElementById('root');
+        if (!root || root.dataset.appMounted === 'true') return;
+        var main = document.createElement('main');
+        main.style.cssText = 'min-height:100vh;padding:24px;background:#f5f4f0;color:#141414;font:16px system-ui';
+        var heading = document.createElement('h1');
+        heading.style.cssText = 'font-size:24px;font-weight:800';
+        heading.textContent = title;
+        var message = document.createElement('p');
+        message.style.cssText = 'margin-top:12px';
+        message.textContent = 'The interface failed before React could start. Share the diagnostic below with support.';
+        var diagnostic = document.createElement('pre');
+        diagnostic.style.cssText = 'margin-top:16px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;background:#fff;border:1px solid #ccc';
+        diagnostic.textContent = detail || 'No browser error details were supplied.';
+        main.append(heading, message, diagnostic);
+        root.replaceChildren(main);
+      }
       window.addEventListener('error', function (event) {
         var root = document.getElementById('root');
         if (!root || root.dataset.appMounted === 'true') return;
-        root.innerHTML = '<main style="min-height:100vh;padding:24px;background:#f5f4f0;color:#141414;font:16px system-ui"><h1 style="font-size:24px;font-weight:800">InsureAPI could not load</h1><p>The app script failed to load or start. Refresh the page. If it continues, tell support the screen says the app script failed.</p></main>';
+        var detail = [
+          event.message || 'Script/module failed to load or execute.',
+          event.filename ? 'File: ' + event.filename : '',
+          event.lineno ? 'Line: ' + event.lineno : '',
+          event.colno ? 'Column: ' + event.colno : ''
+        ].filter(Boolean).join('\\n');
+        showStartupFailure('InsureAPI could not load', detail);
       });
-      window.addEventListener('unhandledrejection', function () {
-        console.error('[InsureAPI] An unhandled asynchronous error occurred during startup.');
+      window.addEventListener('unhandledrejection', function (event) {
+        console.error('[InsureAPI] Unhandled startup rejection', event.reason);
+        var detail = event.reason && (event.reason.stack || event.reason.message)
+          ? String(event.reason.stack || event.reason.message)
+          : String(event.reason || 'Unknown asynchronous startup rejection');
+        showStartupFailure('InsureAPI startup failed', detail);
       });
     </script>
   </head>
