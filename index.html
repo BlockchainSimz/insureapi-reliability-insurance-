@@ -3,11 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#E4E3E0" />
     <title>InsureAPI Reliability</title>
+    <script>
+      window.addEventListener('error', function (event) {
+        var root = document.getElementById('root');
+        if (!root || root.dataset.appMounted === 'true') return;
+        root.innerHTML = '<main style="min-height:100vh;padding:24px;background:#f5f4f0;color:#141414;font:16px system-ui"><h1 style="font-size:24px;font-weight:800">InsureAPI could not load</h1><p>The app script failed to load or start. Refresh the page. If it continues, tell support the screen says the app script failed.</p></main>';
+      });
+      window.addEventListener('unhandledrejection', function () {
+        console.error('[InsureAPI] An unhandled asynchronous error occurred during startup.');
+      });
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><main style="min-height:100vh;padding:24px;background:#f5f4f0;color:#141414;font:16px system-ui"><h1 style="font-size:24px;font-weight:800">InsureAPI</h1><p>Loading the console…</p></main></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
