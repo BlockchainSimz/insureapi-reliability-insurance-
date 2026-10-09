@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
+import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -226,7 +227,80 @@ export async function createApp() {
     }
   });
 
+
   app.use("/api", requireAuth);
+
+  // Gemini stays server-side; never ship the provider API key to browsers.
+  app.post("/api/ai/predict-outage", async (req: AuthedRequest, res: Response) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: "AI insights are not configured on the server yet." });
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-200) : [];
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "Analyze this API performance history and estimate outage likelihood in the next 24 hours. Use evidence in the data and avoid overstating certainty. Performance history: " + JSON.stringify(history),
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              probability: { type: Type.NUMBER },
+              reasoning: { type: Type.STRING },
+              recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+              riskLevel: { type: Type.STRING, enum: ["Low", "Medium", "High", "Critical"] }
+            },
+            required: ["probability", "reasoning", "recommendations", "riskLevel"]
+          }
+        }
+      });
+      return res.json(JSON.parse(response.text || "{}"));
+    } catch (error) {
+      console.error("Gemini outage prediction failed", error instanceof Error ? error.message : "Unknown error");
+      return res.status(502).json({ error: "AI outage prediction failed. Please try again later." });
+    }
+  });
+
+  app.post("/api/ai/quantify-damages", async (req: AuthedRequest, res: Response) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: "AI damage assessment is not configured on the server yet." });
+    const downtimeMinutes = Number(req.body?.downtimeMinutes);
+    const businessContext = typeof req.body?.businessContext === "string" ? req.body.businessContext.slice(0, 2000) : "";
+    if (!Number.isFinite(downtimeMinutes) || downtimeMinutes < 1 || downtimeMinutes > 525600) {
+      return res.status(400).json({ error: "Downtime must be between 1 and 525600 minutes." });
+    }
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "Estimate potential financial damages in USD for an API outage lasting " + downtimeMinutes + " minutes. Business context: " + businessContext + ". Return a reasoned estimate, not a guaranteed insurance payout.",
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              estimatedLoss: { type: Type.NUMBER },
+              breakdown: {
+                type: Type.OBJECT,
+                properties: {
+                  directLoss: { type: Type.NUMBER },
+                  indirectLoss: { type: Type.NUMBER },
+                  reputationDamage: { type: Type.NUMBER }
+                },
+                required: ["directLoss", "indirectLoss", "reputationDamage"]
+              },
+              claimJustification: { type: Type.STRING }
+            },
+            required: ["estimatedLoss", "breakdown", "claimJustification"]
+          }
+        }
+      });
+      return res.json(JSON.parse(response.text || "{}"));
+    } catch (error) {
+      console.error("Gemini damage assessment failed", error instanceof Error ? error.message : "Unknown error");
+      return res.status(502).json({ error: "AI damage assessment failed. Please try again later." });
+    }
+  });
 
   app.get("/api/dashboard/summary", async (req: AuthedRequest, res) => {
     try {
