@@ -30,7 +30,6 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
 }
 
 const rootElement = document.getElementById('root');
-if (rootElement) rootElement.dataset.appMounted = 'true';
 
 if (!rootElement) {
   document.body.innerHTML = '<main style="padding:24px;font:16px system-ui;color:#141414">InsureAPI could not start: page root is missing.</main>';
@@ -43,6 +42,7 @@ if (!rootElement) {
         </AppErrorBoundary>
       </StrictMode>,
     );
+    rootElement.dataset.appMounted = 'true';
   } catch (error) {
     console.error('[InsureAPI] UI bootstrap failed', error);
     rootElement.innerHTML = '<main style="min-height:100vh;padding:24px;background:#f5f4f0;color:#141414;font:16px system-ui"><h1>InsureAPI could not start</h1><p>The interface failed while starting. Refresh once and share this message with support.</p></main>';
