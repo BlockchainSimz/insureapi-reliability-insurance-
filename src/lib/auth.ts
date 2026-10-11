@@ -45,10 +45,12 @@ function authError(error: unknown) {
   const code = (error as { code?: string })?.code || "";
   const messages: Record<string, string> = {
     "auth/invalid-credential": "Invalid email or password",
+    "auth/invalid-login-credentials": "Invalid email or password",
     "auth/email-already-in-use": "An account with this email already exists",
     "auth/weak-password": "Password does not meet Firebase password policy",
     "auth/too-many-requests": "Too many attempts. Please try again later",
     "auth/user-disabled": "This account has been disabled",
+    "auth/network-request-failed": "Unable to reach Firebase Authentication. Check your connection and try again",
   };
   return messages[code] || (error instanceof Error ? error.message : "Authentication failed");
 }
@@ -57,7 +59,7 @@ export async function signIn(email: string, password: string): Promise<AuthSessi
   if (!auth) throw new Error("Firebase Authentication is not configured");
   try {
     const credential = await signInWithEmailAndPassword(auth, email, password);
-    const accessToken = await credential.user.getIdToken();
+    const accessToken = await credential.user.getIdToken(true);
     return {
       access_token: accessToken,
       refresh_token: "",
@@ -85,8 +87,9 @@ export async function getCurrentUser() {
   return auth?.currentUser ? mapUser(auth.currentUser) : null;
 }
 
-export function getAccessToken() {
-  return null;
+export async function getAccessToken() {
+  if (!auth?.currentUser) return null;
+  return auth.currentUser.getIdToken();
 }
 
 export async function signOut() {
@@ -112,7 +115,7 @@ export async function signUp(email: string, password: string): Promise<AuthSessi
   if (password.length < 12) throw new Error("Password must be at least 12 characters");
   try {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
-    const accessToken = await credential.user.getIdToken();
+    const accessToken = await credential.user.getIdToken(true);
     return {
       access_token: accessToken,
       refresh_token: "",
