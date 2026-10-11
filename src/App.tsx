@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { authenticatedFetch, authConfigured, getCurrentUser, signOut } from "./lib/auth";
+import { authenticatedFetch, authConfigured, onAuthChange, signOut } from "./lib/auth";
 import AuthScreen from "./components/AuthScreen";
 import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap, HelpCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -61,22 +61,21 @@ export default function App() {
   const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
 
   useEffect(() => {
-    let active = true;
+    let unsubscribe: (() => void) | undefined;
     if (authConfigured) {
-      getCurrentUser().then(user => {
-        if (!active) return;
+      unsubscribe = onAuthChange(user => {
         setAuthenticated(Boolean(user));
         setAuthChecking(false);
-      }).catch(() => {
-        if (active) setAuthChecking(false);
       });
+    } else {
+      setAuthChecking(false);
     }
     const hasSeenOnboarding = localStorage.getItem("insureapi_onboarding_complete");
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
     if (!authConfigured) void fetchMonitors();
-    return () => { active = false; };
+    return () => unsubscribe?.();
   }, []);
 
   useEffect(() => {
@@ -117,12 +116,28 @@ export default function App() {
   const fetchMonitors = async () => {
     try {
       const res = await authenticatedFetch("/api/monitors");
-      const data = await res.json();
-      setMonitors(data);
-      setLoading(false);
+      const data: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message =
+          data && typeof data === "object" && "error" in data && typeof data.error === "string"
+            ? data.error
+            : "Monitor request failed (HTTP " + res.status + ")";
+        throw new Error(message);
+      }
+      const rows = Array.isArray(data)
+        ? data
+        : data && typeof data === "object" && "data" in data && Array.isArray(data.data)
+          ? data.data
+          : null;
+      if (!rows) throw new Error("The monitor API returned an unexpected response format.");
+      setMonitors(rows as Monitor[]);
       void fetchSummary();
     } catch (error) {
       console.error("Failed to fetch monitors", error);
+      setMonitors([]);
+      toast.error(error instanceof Error ? error.message : "Unable to load monitors");
+    } finally {
+      setLoading(false);
     }
   };
 

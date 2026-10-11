@@ -4,30 +4,30 @@ InsureAPI is a reliability monitoring and insurance operations console.
 
 ## Phase 1 — production foundation
 
-Phase 1 establishes persistent Postgres storage, RLS, Supabase Auth integration, server-side validation, security middleware, readiness endpoints and CI.
+Phase 1 establishes persistent Cloud Firestore storage, Firebase Authentication integration, server-side validation, security middleware, readiness endpoints and CI.
 
-### Supabase setup
+### Firebase setup
 
-Use a dedicated Supabase project for InsureAPI. Do not reuse another application's database.
+Use a dedicated Firebase project for InsureAPI. Do not reuse another application's database.
 
-Apply `supabase/migrations/202610030001_phase1_foundation.sql`, then configure the variables in `.env.example`.
+Apply `firebase/migrations/202610030001_phase1_foundation.sql`, then configure the variables in `.env.example`.
 
 Production requires:
 - `NODE_ENV=production`
 - `AUTH_REQUIRED=true`
-- `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`
-- `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` for server/worker access
+- `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, and `VITE_FIREBASE_APP_ID` for the web client
 - `APP_URL`
 
-Never put a Supabase service-role or secret key in a VITE_ variable.
+Never put Firebase Admin credentials, especially `FIREBASE_PRIVATE_KEY`, in a `VITE_*` variable.
 
-The API validates the authenticated Supabase user on every protected request. Database access uses that user's bearer token so RLS remains the authorization boundary.
+The API verifies Firebase ID tokens on every protected request. Firestore access is performed by the trusted Admin SDK, while ownership is enforced in the API by the authenticated Firebase UID.
 
 ### Local development
 
 1. Use Node.js 22 and npm.
 2. Copy `.env.example` to `.env.local`.
-3. Configure Supabase values for authenticated testing.
+3. Configure Firebase values for authenticated testing.
 4. Run `npm install`.
 5. Run `npm run dev`.
 6. Run `npm run lint`.
@@ -58,7 +58,7 @@ The repository also exposes `npm test`, `npm run verify`, and `npm run security:
 
 ### Worker deployment requirement
 
-The production API no longer starts the long-running monitor worker automatically. Run the worker as a separate persistent process/service using `npm run worker`, with the same Supabase server-side credentials and SMTP configuration. This avoids coupling monitoring to an Express/serverless request lifecycle. A scheduler or managed worker platform should keep that process alive and restart it on failure.
+The production API no longer starts the long-running monitor worker automatically. Run the worker as a separate persistent process/service using `npm run worker`, with the same Firebase Admin server-side credentials and SMTP configuration. This avoids coupling monitoring to an Express/serverless request lifecycle. A scheduler or managed worker platform should keep that process alive and restart it on failure.
 
 ## Standalone deployment
 
@@ -68,5 +68,5 @@ InsureAPI is a standalone Node.js + Express application. The same server serves 
 - Start: npm start
 - Container: docker compose -f docker-compose.production.yml up -d --build
 - API and frontend are served from the same origin and port (default 3000).
-- The monitoring worker runs as a separate process/container against the same application and Supabase backend.
+- The monitoring worker runs as a separate process/container against the same application and Firebase backend.
 
