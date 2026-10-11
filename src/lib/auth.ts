@@ -32,9 +32,9 @@ let firebaseApp: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let initPromise: Promise<Auth> | null = null;
 
-// Production authentication is always required. The actual public Firebase web
-// configuration is fetched at runtime from the API so Vercel does not need
-// build-time VITE_FIREBASE_* variables.
+// Production authentication is always required. The public Firebase web
+// configuration is fetched at runtime from the Railway API, so the browser
+// does not depend on deployment-specific build-time secrets.
 export const authConfigured = true;
 
 async function ensureAuth(): Promise<Auth> {
