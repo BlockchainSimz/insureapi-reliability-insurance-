@@ -215,6 +215,21 @@ export async function createApp() {
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/api/auth/config", (_req, res) => {
+    const config = {
+      apiKey: process.env.VITE_FIREBASE_API_KEY || "",
+      authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN || "",
+      projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "",
+      storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET || "",
+      messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+      appId: process.env.VITE_FIREBASE_APP_ID || "",
+    };
+    if (!config.apiKey || !config.authDomain || !config.projectId || !config.appId) {
+      return res.status(503).json({ error: "Firebase web authentication configuration is unavailable" });
+    }
+    return res.json(config);
+  });
+
   app.get("/ready", async (_req, res) => {
     const configured = Boolean(getFirebaseAdminIdentity().projectId && firebaseAdminConfigured && firebaseAuth && firestore);
     if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
