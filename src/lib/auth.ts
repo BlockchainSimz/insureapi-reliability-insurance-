@@ -1,10 +1,11 @@
-import { getApp, getApps, initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import {
   createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
+  type Auth,
   type User,
 } from "firebase/auth";
 
@@ -16,26 +17,61 @@ export interface AuthSession {
   user: { id: string; email?: string };
 }
 
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID as string | undefined,
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "https://insureapi-api-production.up.railway.app").replace(/\/+$/, "");
+
+type FirebaseWebConfig = {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  storageBucket?: string;
+  messagingSenderId?: string;
+  appId: string;
 };
 
-export const authConfigured = Boolean(
-  firebaseConfig.apiKey &&
-  firebaseConfig.authDomain &&
-  firebaseConfig.projectId &&
-  firebaseConfig.appId
-);
+let firebaseApp: FirebaseApp | null = null;
+let auth: Auth | null = null;
+let initPromise: Promise<Auth> | null = null;
 
-const app = authConfigured
-  ? (getApps().length ? getApp() : initializeApp(firebaseConfig))
-  : null;
-const auth = app ? getAuth(app) : null;
+// Production authentication is always required. The actual public Firebase web
+// configuration is fetched at runtime from the API so Vercel does not need
+// build-time VITE_FIREBASE_* variables.
+export const authConfigured = true;
+
+async function ensureAuth(): Promise<Auth> {
+  if (auth) return auth;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    const response = await fetch(API_BASE_URL + "/api/auth/config", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const config = await response.json().catch(() => null);
+    if (!response.ok || !config?.apiKey || !config?.authDomain || !config?.projectId || !config?.appId) {
+      throw new Error("Firebase Authentication configuration is unavailable");
+    }
+
+    const firebaseConfig: FirebaseWebConfig = {
+      apiKey: String(config.apiKey),
+      authDomain: String(config.authDomain),
+      projectId: String(config.projectId),
+      storageBucket: config.storageBucket ? String(config.storageBucket) : undefined,
+      messagingSenderId: config.messagingSenderId ? String(config.messagingSenderId) : undefined,
+      appId: String(config.appId),
+    };
+
+    firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+    auth = getAuth(firebaseApp);
+    return auth;
+  })();
+
+  try {
+    return await initPromise;
+  } catch (error) {
+    initPromise = null;
+    throw error;
+  }
+}
 
 function mapUser(user: User) {
   return { id: user.uid, email: user.email || undefined };
@@ -51,14 +87,16 @@ function authError(error: unknown) {
     "auth/too-many-requests": "Too many attempts. Please try again later",
     "auth/user-disabled": "This account has been disabled",
     "auth/network-request-failed": "Unable to reach Firebase Authentication. Check your connection and try again",
+    "auth/api-key-not-valid": "Firebase Authentication configuration is invalid on the server",
+    "auth/invalid-api-key": "Firebase Authentication configuration is invalid on the server",
   };
   return messages[code] || (error instanceof Error ? error.message : "Authentication failed");
 }
 
 export async function signIn(email: string, password: string): Promise<AuthSession> {
-  if (!auth) throw new Error("Firebase Authentication is not configured");
+  const firebaseAuth = await ensureAuth();
   try {
-    const credential = await signInWithEmailAndPassword(auth, email, password);
+    const credential = await signInWithEmailAndPassword(firebaseAuth, email, password);
     const accessToken = await credential.user.getIdToken(true);
     return {
       access_token: accessToken,
@@ -88,8 +126,9 @@ export async function getCurrentUser() {
 }
 
 export async function getAccessToken() {
-  if (!auth?.currentUser) return null;
-  return auth.currentUser.getIdToken();
+  const firebaseAuth = await ensureAuth();
+  if (!firebaseAuth.currentUser) return null;
+  return firebaseAuth.currentUser.getIdToken();
 }
 
 export async function signOut() {
@@ -97,24 +136,38 @@ export async function signOut() {
 }
 
 export function onAuthChange(callback: (user: { id: string; email?: string } | null) => void) {
-  if (!auth) return () => undefined;
-  return onAuthStateChanged(auth, user => callback(user ? mapUser(user) : null));
+  let unsubscribe = () => undefined;
+  void ensureAuth()
+    .then(firebaseAuth => {
+      unsubscribe = onAuthStateChanged(firebaseAuth, user => callback(user ? mapUser(user) : null));
+    })
+    .catch(error => {
+      console.error("[InsureAPI] Firebase auth initialization failed", error);
+      callback(null);
+    });
+  return () => unsubscribe();
 }
 
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const firebaseAuth = await ensureAuth();
   const requestHeaders = new Headers(init.headers);
-  if (auth?.currentUser) {
-    const token = await auth.currentUser.getIdToken();
+  if (firebaseAuth.currentUser) {
+    const token = await firebaseAuth.currentUser.getIdToken();
     requestHeaders.set("Authorization", "Bearer " + token);
   }
-  return fetch(input, { ...init, headers: requestHeaders });
+
+  const target = typeof input === "string" && input.startsWith("/")
+    ? API_BASE_URL + input
+    : input;
+
+  return fetch(target, { ...init, headers: requestHeaders });
 }
 
 export async function signUp(email: string, password: string): Promise<AuthSession | null> {
-  if (!auth) throw new Error("Firebase Authentication is not configured");
+  const firebaseAuth = await ensureAuth();
   if (password.length < 12) throw new Error("Password must be at least 12 characters");
   try {
-    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    const credential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
     const accessToken = await credential.user.getIdToken(true);
     return {
       access_token: accessToken,
