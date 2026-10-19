@@ -196,7 +196,26 @@ export default function App() {
       <Toaster position="top-right" />
       
       <AnimatePresence>
-        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} onCreateMonitor={async ({ name, url, alertEmail }) => {\n            const res = await authenticatedFetch("/api/monitors", {\n              method: "POST",\n              body: JSON.stringify({ name, url, alertEmail })\n            });\n            const data = await res.json().catch(() => null);\n            if (!res.ok) throw new Error(data?.error || "Failed to create monitor");\n            setMonitors(prev => [...prev, data]);\n            setSelectedMonitorId(data.id);\n            toast.success("First monitor created");\n          }} />}
+        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} onCreateMonitor={async ({ name, url, alertEmail }) => {
+            const res = await authenticatedFetch("/api/monitors", {
+              method: "POST",
+              body: JSON.stringify({ name, url, alertEmail })
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.error || "Failed to create monitor");
+            setMonitors(prev => [...prev, data]);
+            setSelectedMonitorId(data.id);
+            try {
+              const health = await handleCheckHealth(data.id);
+              const updated = { ...data, ...health };
+              setMonitors(prev => prev.map(m => m.id === data.id ? { ...m, ...updated } : m));
+              toast.success("First health check complete");
+              return updated;
+            } catch {
+              toast.warning("Monitor created, but the first health check could not complete yet.");
+              return data;
+            }
+          }} />}
       </AnimatePresence>
       {/* Header */}
       <header className="border-b border-[#141414] p-6 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-50">
