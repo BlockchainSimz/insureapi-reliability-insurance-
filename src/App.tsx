@@ -215,7 +215,7 @@ export default function App() {
               toast.warning("Monitor created, but the first health check could not complete yet.");
               return data;
             }
-          }} />}
+          }} />
       </AnimatePresence>
       {/* Header */}
       <header className="border-b border-[#141414] p-6 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-50">
