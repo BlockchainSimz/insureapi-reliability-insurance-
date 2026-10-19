@@ -1,12 +1,12 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Shield, Activity, Brain, Bell, CheckCircle2, ChevronRight, ArrowLeft, Plus } from "lucide-react";
+import { Shield, Activity, Brain, Bell, CheckCircle2, ChevronRight, ArrowLeft, Plus, Gauge, RefreshCw, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 interface OnboardingProps {
   onComplete: () => void;
-  onCreateMonitor?: (input: { name: string; url: string; alertEmail?: string }) => Promise<void>;
+  onCreateMonitor?: (input: { name: string; url: string; alertEmail?: string }) => Promise<{ id: string; reliabilityScore?: number; status?: string; latency?: number }>;
 }
 
 const steps = [
@@ -23,13 +23,19 @@ export default function Onboarding({ onComplete, onCreateMonitor }: OnboardingPr
   const [alertEmail, setAlertEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [firstMonitor, setFirstMonitor] = useState<{ id: string; reliabilityScore?: number; status?: string; latency?: number } | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const finish = async () => {
     if (step === 2 && url.trim() && onCreateMonitor) {
       setBusy(true);
       setError("");
       try {
-        await onCreateMonitor({ name: name.trim() || "My first API", url: url.trim(), alertEmail: alertEmail.trim() || undefined });
+        const created = await onCreateMonitor({ name: name.trim() || "My first API", url: url.trim(), alertEmail: alertEmail.trim() || undefined });
+        setFirstMonitor(created);
+        setChecking(true);
+        await new Promise(resolve => setTimeout(resolve, 450));
+        setChecking(false);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not create your first monitor.");
         setBusy(false);
