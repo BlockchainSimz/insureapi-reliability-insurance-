@@ -56,6 +56,10 @@ function securityHeaders(req: Request, res: Response, next: NextFunction) {
 
 function cors(req: Request, res: Response, next: NextFunction) {
   const origin = req.headers.origin;
+  // Browser navigation and static assets are same-origin application traffic,
+  // not cross-origin API calls. CORS must never block them because APP_URL can
+  // differ from the Railway public domain.
+  if (!req.path.startsWith("/api/")) return next();
   if (!origin || !APP_URL || origin === APP_URL) {
     if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
