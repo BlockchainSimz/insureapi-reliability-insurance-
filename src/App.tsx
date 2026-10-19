@@ -196,7 +196,7 @@ export default function App() {
       <Toaster position="top-right" />
       
       <AnimatePresence>
-        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} onCreateMonitor={async ({ name, url, alertEmail }) => {\n            const res = await authenticatedFetch("/api/monitors", {\n              method: "POST",\n              body: JSON.stringify({ name, url, alertEmail })\n            });\n            const data = await res.json().catch(() => null);\n            if (!res.ok) throw new Error(data?.error || "Failed to create monitor");\n            setMonitors(prev => [...prev, data]);\n            setSelectedMonitorId(data.id);\n            toast.success("First monitor created");\n          }} />}
       </AnimatePresence>
       {/* Header */}
       <header className="border-b border-[#141414] p-6 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-50">
