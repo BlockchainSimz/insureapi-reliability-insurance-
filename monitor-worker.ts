@@ -2,9 +2,8 @@ import axios from "axios";
 import nodemailer from "nodemailer";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { classifyCheck } from "./src/monitor/classification.js";
-
-const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+import { firestore, firebaseAdminConfigured, verifyFirestoreConnection, getFirebaseAdminIdentity, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
+import type { Query } from "firebase-admin/firestore";
 
 const ONCE = process.argv.includes("--once");
 const WORKER_INTERVAL_MS = Number(process.env.MONITOR_WORKER_INTERVAL_MS || 10000);
@@ -30,16 +29,85 @@ type Monitor = {
 
 let running = false;
 
-async function db(table: string, init: RequestInit = {}) {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) throw new Error("Worker requires SUPABASE_SERVICE_ROLE_KEY");
-  const headers = new Headers(init.headers);
-  headers.set("apikey", SUPABASE_SERVICE_ROLE_KEY);
-  headers.set("Authorization", "Bearer " + SUPABASE_SERVICE_ROLE_KEY);
-  headers.set("Content-Type", "application/json");
-  const res = await fetch(SUPABASE_URL + "/rest/v1/" + table, { ...init, headers });
-  const body = await res.text();
-  if (!res.ok) throw new Error(body || "Database request failed");
-  return body ? JSON.parse(body) : [];
+function parseValue(raw: string) {
+  const decoded = decodeURIComponent(raw);
+  if (decoded === "true") return true;
+  if (decoded === "false") return false;
+  if (decoded !== "" && /^-?\d+(\.\d+)?$/.test(decoded)) return Number(decoded);
+  return decoded;
+}
+
+async function db(resource: string, init: RequestInit = {}): Promise<any> {
+  if (!firebaseAdminConfigured || !firestore) throw new Error("Firebase Admin is not configured");
+  const [path, queryString = ""] = resource.split("?");
+  const segments = path.split("/").filter(Boolean);
+  const collectionName = segments[0];
+  const params = new URLSearchParams(queryString);
+  const method = init.method || "GET";
+  const body = init.body ? JSON.parse(String(init.body)) : undefined;
+
+  if (collectionName === "rpc" && segments[1] === "calculate_monitor_reliability") {
+    const monitorId = body?.p_monitor_id;
+    const hours = Number(body?.p_window_hours || 24);
+    const cutoff = Date.now() - hours * 3600000;
+    const snap = await firestore.collection("monitor_checks").where("monitor_id", "==", monitorId).get();
+    const checks = snap.docs.map(d => d.data()).filter(row => Date.parse(String(row.checked_at || "")) >= cutoff);
+    return checks.length ? Number(((checks.filter(row => row.ok).length / checks.length) * 100).toFixed(2)) : 100;
+  }
+
+  if (method === "GET") {
+    let query: Query = firestore.collection(collectionName);
+    for (const [key, raw] of params.entries()) {
+      if (["order", "limit", "select"].includes(key)) continue;
+      const match = raw.match(/^(eq|gte|lte)\.(.*)$/);
+      if (match) {
+        query = query.where(key, match[1] === "eq" ? "==" : match[1] === "gte" ? ">=" : "<=", parseValue(match[2]));
+      }
+    }
+    const snap = await query.get();
+    let rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    const order = params.get("order");
+    if (order) {
+      const [field, direction = "asc"] = order.split(".");
+      rows.sort((a: any, b: any) => {
+        const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+        const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+        const left = typeof av === "string" ? Date.parse(av) || av : av;
+        const right = typeof bv === "string" ? Date.parse(bv) || bv : bv;
+        if (left === right) return 0;
+        const result = left > right ? 1 : -1;
+        return direction === "desc" ? -result : result;
+      });
+    }
+    const limit = Number(params.get("limit") || 0);
+    if (limit > 0) rows = rows.slice(0, Math.min(limit, 100));
+    return rows;
+  }
+
+  const idMatch = params.get("id")?.match(/^eq\.(.+)$/);
+  if (method === "POST") {
+    const data = { ...(body || {}) };
+    if (collectionName === "monitor_checks" && !data.checked_at) data.checked_at = new Date().toISOString();
+    if (collectionName === "monitor_incidents" && !data.started_at) data.started_at = new Date().toISOString();
+    if (collectionName === "monitor_alerts" && !data.created_at) data.created_at = new Date().toISOString();
+    const ref = await firestore.collection(collectionName).add(data);
+    return [{ id: ref.id, ...data }];
+  }
+  if (method === "PATCH") {
+    if (!idMatch) throw new Error("Firebase update requires a document id");
+    const id = decodeURIComponent(idMatch[1]);
+    await firestore.collection(collectionName).doc(id).update(body || {});
+    const snap = await firestore.collection(collectionName).doc(id).get();
+    return snap.exists ? [{ id: snap.id, ...snap.data() }] : [];
+  }
+  if (method === "DELETE") {
+    if (!idMatch) throw new Error("Firebase delete requires a document id");
+    const id = decodeURIComponent(idMatch[1]);
+    await firestore.collection(collectionName).doc(id).delete();
+    return [{ id }];
+  }
+  throw new Error("Unsupported Firebase request");
 }
 
 async function checkMonitor(m: Monitor) {
@@ -62,7 +130,7 @@ async function checkMonitor(m: Monitor) {
     errorMessage = error instanceof Error ? error.message.slice(0, 500) : "Check failed";
   }
 
-  await db("monitor_checks", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+  await db("monitor_checks", { method: "POST", body: JSON.stringify({
     monitor_id: m.id, checked_at: new Date().toISOString(), status_code: statusCode,
     latency_ms: latency, ok, error_code: errorCode, error_message: errorMessage
   }) });
@@ -74,7 +142,7 @@ async function checkMonitor(m: Monitor) {
   const open = incidents[0];
 
   if (!ok && !open && failures >= m.failure_threshold) {
-    const created = await db("monitor_incidents", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ monitor_id: m.id, reason: errorCode || "CHECK_FAILED", failure_count: failures }) });
+    const created = await db("monitor_incidents", { method: "POST", body: JSON.stringify({ monitor_id: m.id, reason: errorCode || "CHECK_FAILED", failure_count: failures }) });
     const incidentId = created?.[0]?.id || null;
     await queueAlert(m, incidentId, "incident_opened");
     if (m.failover_enabled && m.fallback_url && failures >= m.failover_trigger_count) {
@@ -82,14 +150,14 @@ async function checkMonitor(m: Monitor) {
       try {
         const fallbackResponse = await axios.get(fallback.url, { timeout: 5000, maxRedirects: 0, validateStatus: () => true, ...pinnedAgents(fallback) });
         const healthy = fallbackResponse.status >= 200 && fallbackResponse.status < 300;
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+        await db("monitor_failover_events", { method: "POST", body: JSON.stringify({
           monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url,
           status: healthy ? "verified" : "failed", completed_at: new Date().toISOString(),
           error_message: healthy ? null : "Fallback returned HTTP " + fallbackResponse.status
         }) });
         if (healthy) await queueAlert(m, incidentId, "failover_triggered");
       } catch (error) {
-        await db("monitor_failover_events", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+        await db("monitor_failover_events", { method: "POST", body: JSON.stringify({
           monitor_id: m.id, incident_id: incidentId, primary_url: m.url, fallback_url: fallback.url,
           status: "failed", completed_at: new Date().toISOString(),
           error_message: error instanceof Error ? error.message.slice(0, 500) : "Fallback verification failed"
@@ -97,7 +165,7 @@ async function checkMonitor(m: Monitor) {
       }
     }
   } else if (ok && open && recoveries >= m.recovery_threshold) {
-    await db("monitor_incidents?id=eq." + encodeURIComponent(open.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+    await db("monitor_incidents?id=eq." + encodeURIComponent(open.id), { method: "PATCH", body: JSON.stringify({
       status: "resolved", resolved_at: new Date().toISOString(), recovery_count: recoveries
     }) });
     await queueAlert(m, open.id, "incident_resolved");
@@ -105,7 +173,7 @@ async function checkMonitor(m: Monitor) {
 
   await updateReliability(m);
   const status = !httpHealthy ? "down" : latency > m.latency_threshold_ms ? "degraded" : "up";
-  await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+  await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", body: JSON.stringify({
     status, latency_ms: latency, last_checked_at: new Date().toISOString()
   }) });
 }
@@ -115,7 +183,7 @@ async function queueAlert(m: Monitor, incidentId: string | null, alertType: "inc
   const cutoff = new Date(Date.now() - Math.max(1, m.alert_cooldown_minutes || 30) * 60000).toISOString();
   const existing = await db("monitor_alerts?monitor_id=eq." + encodeURIComponent(m.id) + "&alert_type=eq." + encodeURIComponent(alertType) + "&created_at=gte." + encodeURIComponent(cutoff) + "&limit=1");
   if (existing.length) return;
-  await db("monitor_alerts", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+  await db("monitor_alerts", { method: "POST", body: JSON.stringify({
     monitor_id: m.id, incident_id: incidentId, alert_type: alertType, recipient: m.alert_email, next_attempt_at: new Date().toISOString()
   }) });
 }
@@ -127,12 +195,12 @@ async function dispatchAlerts() {
   for (const alert of alerts) {
     try {
       await mailer.sendMail({ from: SMTP_FROM, to: alert.recipient, subject: "InsureAPI " + alert.alert_type.replace(/_/g, " "), text: "Monitor alert: " + alert.alert_type + "\nMonitor ID: " + alert.monitor_id });
-      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", body: JSON.stringify({
         status: "sent", attempts: (alert.attempts || 0) + 1, sent_at: new Date().toISOString(), last_error: null
       }) });
     } catch (error) {
       const attempts = (alert.attempts || 0) + 1;
-      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({
+      await db("monitor_alerts?id=eq." + encodeURIComponent(alert.id), { method: "PATCH", body: JSON.stringify({
         status: attempts >= ALERT_MAX_ATTEMPTS ? "failed" : "pending",
         attempts, next_attempt_at: new Date(Date.now() + ALERT_RETRY_DELAY_MS * attempts).toISOString(),
         last_error: error instanceof Error ? error.message.slice(0, 500) : "Email failed"
@@ -144,7 +212,7 @@ async function dispatchAlerts() {
 async function updateReliability(m: Monitor) {
   const result = await db("rpc/calculate_monitor_reliability", { method: "POST", body: JSON.stringify({ p_monitor_id: m.id, p_window_hours: 24 }) });
   const score = Number(result);
-  if (Number.isFinite(score)) await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ reliability_score: score }) });
+  if (Number.isFinite(score)) await db("monitors?id=eq." + encodeURIComponent(m.id), { method: "PATCH", body: JSON.stringify({ reliability_score: score }) });
 }
 
 async function loadMonitors(): Promise<Monitor[]> {
@@ -169,17 +237,28 @@ async function tick() {
     }
     await dispatchAlerts();
   } catch (error) {
-    console.error("[monitor-worker] tick failed", error);
+    console.error("[monitor-worker] tick failed", sanitizeFirebaseError(error));
   } finally {
     running = false;
   }
 }
 
 export function startMonitorWorker() {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    console.warn("[monitor-worker] disabled: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+  if (!firebaseAdminConfigured || !firestore) {
+    console.warn("[monitor-worker] disabled: Firebase Admin credentials are required");
     return () => {};
   }
+  const identity = getFirebaseAdminIdentity();
+  console.log("[monitor-worker] Firebase config", JSON.stringify({
+    projectId: identity.projectId,
+    clientEmail: identity.clientEmail,
+    keyPresent: identity.keyPresent,
+    keyFormat: identity.keyFormat,
+    keyLength: identity.keyLength,
+  }));
+  void verifyFirestoreConnection()
+    .then(() => console.log("[monitor-worker] Firestore connectivity verified"))
+    .catch((error) => console.error("[monitor-worker] Firestore connectivity failed", sanitizeFirebaseError(error)));
   void tick();
   if (ONCE) return () => {};
   const timer = setInterval(() => void tick(), WORKER_INTERVAL_MS);
