@@ -219,8 +219,8 @@ async function loadMonitors(): Promise<Monitor[]> {
   return db("monitors?enabled=eq.true&select=id,url,enabled,check_interval_seconds,timeout_ms,expected_status_min,expected_status_max,latency_threshold_ms,failure_threshold,recovery_threshold,status,alert_email,alert_cooldown_minutes,fallback_url,failover_enabled,failover_trigger_count");
 }
 
-async function tick() {
-  if (running) return;
+async function tick(): Promise<boolean> {
+  if (running) return false;
   running = true;
   try {
     const monitors = await loadMonitors();
@@ -236,11 +236,36 @@ async function tick() {
       }));
     }
     await dispatchAlerts();
+    return true;
   } catch (error) {
     console.error("[monitor-worker] tick failed", sanitizeFirebaseError(error));
+    return false;
   } finally {
     running = false;
   }
+}
+
+// Vercel Cron is request-based rather than a permanently running process.
+// Keep the existing 10-second check cadence inside a bounded invocation.
+export async function runMonitorWorkerWindow(windowMs = 55_000) {
+  if (!firebaseAdminConfigured || !firestore) {
+    throw new Error("Firebase Admin credentials are required");
+  }
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(1_000, Math.min(58_000, windowMs));
+  let ticks = 0;
+  let failedTicks = 0;
+
+  do {
+    if (await tick()) ticks += 1;
+    else failedTicks += 1;
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(WORKER_INTERVAL_MS, remaining)));
+  } while (Date.now() < deadline);
+
+  return { ticks, failedTicks, durationMs: Date.now() - startedAt };
 }
 
 export function startMonitorWorker() {
