@@ -7,6 +7,7 @@ import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
+import { runMonitorWorkerWindow } from "./monitor-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,19 +57,21 @@ function securityHeaders(req: Request, res: Response, next: NextFunction) {
 
 function cors(req: Request, res: Response, next: NextFunction) {
   const origin = req.headers.origin;
-  // Browser navigation and static assets are same-origin application traffic,
-  // not cross-origin API calls. CORS must never block them because APP_URL can
-  // differ from the Railway public domain.
   if (!req.path.startsWith("/api/")) return next();
-  if (!origin || !APP_URL || origin === APP_URL) {
-    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    if (req.method === "OPTIONS") return res.sendStatus(204);
-    return next();
-  }
-  return res.status(403).json({ error: "Origin not allowed" });
+
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const protocol = forwardedProto || req.protocol;
+  const requestOrigin = req.get("host") ? protocol + "://" + req.get("host") : "";
+  const allowed = !origin || origin === APP_URL || origin === requestOrigin;
+
+  if (!allowed) return res.status(403).json({ error: "Origin not allowed" });
+
+  if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  return next();
 }
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
@@ -247,6 +250,36 @@ export async function createApp() {
     }
   });
 
+
+  // Public platform health routes remain available after the API is moved to Vercel.
+  app.get("/api/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/api/ready", async (_req, res) => {
+    const configured = Boolean(getFirebaseAdminIdentity().projectId && firebaseAdminConfigured && firebaseAuth && firestore);
+    if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
+    if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
+    try {
+      await firestore!.collection("_health").doc("readiness").set({ checked_at: new Date().toISOString() });
+      return res.json({ ready: true, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: true });
+    } catch {
+      return res.status(503).json({ ready: false, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: false });
+    }
+  });
+
+  // Vercel Cron invokes this route. The secret check happens before user auth.
+  app.get("/api/cron/monitor-worker", async (req, res) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret || req.headers.authorization !== "Bearer " + cronSecret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const result = await runMonitorWorkerWindow(55_000);
+      if (result.failedTicks > 0) return res.status(500).json({ ok: false, ...result });
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      console.error("[monitor-worker] scheduled run failed", sanitizeFirebaseError(error));
+      return res.status(503).json({ ok: false, error: "Monitor worker is not configured" });
+    }
+  });
 
   app.use("/api", rateLimit, requireAuth);
 
@@ -498,7 +531,8 @@ export async function createApp() {
         }
       }
     }));
-    app.get("*", (_req, res) => {
+    app.get("*", (req, res) => {
+      if (req.path.startsWith("/api/")) return res.status(404).json({ error: "API route not found" });
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
