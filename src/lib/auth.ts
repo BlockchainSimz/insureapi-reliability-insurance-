@@ -17,7 +17,7 @@ export interface AuthSession {
   user: { id: string; email?: string };
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "https://insureapi-api-production.up.railway.app").replace(/\/+$/, "");
+const API_BASE_URL = ""; // Same-origin API: frontend and backend are deployed together on Vercel.
 
 type FirebaseWebConfig = {
   apiKey: string;
@@ -33,8 +33,8 @@ let auth: Auth | null = null;
 let initPromise: Promise<Auth> | null = null;
 
 // Production authentication is always required. The public Firebase web
-// configuration is fetched at runtime from the Railway API, so the browser
-// does not depend on deployment-specific build-time secrets.
+// configuration is fetched at runtime from this deployment’s API, so previews
+// and production use the same-origin backend without a hard-coded host.
 export const authConfigured = true;
 
 async function ensureAuth(): Promise<Auth> {
