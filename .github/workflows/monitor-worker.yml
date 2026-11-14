@@ -13,7 +13,7 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - name: Run the Vercel-hosted monitoring worker
         env:
@@ -27,6 +27,6 @@ jobs:
             exit 1
           fi
           curl --fail-with-body --silent --show-error \
-            --max-time 290 \
+            --max-time 55 \
             --header "Authorization: Bearer ${CRON_SECRET}" \
             "${API_URL}/api/cron/monitor-worker"
