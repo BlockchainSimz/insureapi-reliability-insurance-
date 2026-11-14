@@ -272,7 +272,7 @@ export async function createApp() {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
-      const result = await runMonitorWorkerWindow(55_000);
+      const result = await runMonitorWorkerWindow(270_000);
       if (result.failedTicks > 0) return res.status(500).json({ ok: false, ...result });
       return res.json({ ok: true, ...result });
     } catch (error) {
