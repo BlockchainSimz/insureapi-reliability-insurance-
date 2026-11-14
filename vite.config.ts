@@ -8,7 +8,7 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     define: {
-      // Railway provides VITE_* values at build time through process.env.
+      // Vercel provides VITE_* values at build time through process.env.
       // Explicitly expose the Firebase web config because this project also
       // overrides selected import.meta.env keys here.
       'import.meta.env.VITE_FIREBASE_API_KEY': JSON.stringify(env.VITE_FIREBASE_API_KEY),
