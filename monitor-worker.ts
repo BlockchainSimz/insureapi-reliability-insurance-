@@ -247,12 +247,13 @@ async function tick(): Promise<boolean> {
 
 // Vercel Cron is request-based rather than a permanently running process.
 // Keep the existing 10-second check cadence inside a bounded invocation.
-export async function runMonitorWorkerWindow(windowMs = 55_000) {
+export async function runMonitorWorkerWindow(windowMs = 270_000) {
   if (!firebaseAdminConfigured || !firestore) {
     throw new Error("Firebase Admin credentials are required");
   }
   const startedAt = Date.now();
-  const deadline = startedAt + Math.max(1_000, Math.min(58_000, windowMs));
+  // Leave a 30-second safety margin inside Hobby's 300-second Function limit.
+  const deadline = startedAt + Math.max(1_000, Math.min(270_000, windowMs));
   let ticks = 0;
   let failedTicks = 0;
 
