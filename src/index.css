@@ -60,7 +60,6 @@ body {
   background: var(--foreground);
 }
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));

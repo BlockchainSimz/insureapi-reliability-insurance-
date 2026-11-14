@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import { authenticatedFetch, authConfigured, onAuthChange, signOut } from "./lib/auth";
+import AuthScreen from "./components/AuthScreen";
 import { Activity, Shield, AlertTriangle, FileText, Plus, Settings, BarChart3, Zap, HelpCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -54,16 +56,37 @@ export default function App() {
   const [selectedMonitorId, setSelectedMonitorId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [authenticated, setAuthenticated] = useState(!authConfigured);
+  const [authChecking, setAuthChecking] = useState(authConfigured);
+  const [summary, setSummary] = useState({ total: 0, healthy: 0, degraded: 0, down: 0, aggregateReliability: 100, status: "operational" });
 
   useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    if (authConfigured) {
+      unsubscribe = onAuthChange(user => {
+        setAuthenticated(Boolean(user));
+        setAuthChecking(false);
+      });
+    } else {
+      setAuthChecking(false);
+    }
     const hasSeenOnboarding = localStorage.getItem("insureapi_onboarding_complete");
     if (!hasSeenOnboarding) {
       setShowOnboarding(true);
     }
-    fetchMonitors();
-    const interval = setInterval(fetchMonitors, 10000);
-    return () => clearInterval(interval);
+    if (!authConfigured) void fetchMonitors();
+    return () => unsubscribe?.();
   }, []);
+
+  useEffect(() => {
+    if (!authConfigured || !authenticated) return;
+    void fetchMonitors();
+    const interval = setInterval(() => void fetchMonitors(), 10000);
+    return () => clearInterval(interval);
+  }, [authenticated]);
+
+  if (authChecking) return <div className="min-h-screen flex items-center justify-center bg-[#E4E3E0]"><p className="text-xs uppercase tracking-widest">Checking authentication...</p></div>;
+  if (authConfigured && !authenticated) return <AuthScreen onAuthenticated={() => setAuthenticated(true)} />;
 
   const handleGlobalHealthCheck = async () => {
     toast.promise(
@@ -81,20 +104,66 @@ export default function App() {
     setShowOnboarding(false);
   };
 
+  const fetchSummary = async () => {
+    try {
+      const res = await authenticatedFetch("/api/dashboard/summary");
+      if (res.ok) setSummary(await res.json());
+    } catch (error) {
+      console.error("Failed to fetch dashboard summary", error);
+    }
+  };
+
   const fetchMonitors = async () => {
     try {
-      const res = await fetch("/api/monitors");
-      const data = await res.json();
-      setMonitors(data);
-      setLoading(false);
+      const res = await authenticatedFetch("/api/monitors");
+      const data: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message =
+          data && typeof data === "object" && "error" in data && typeof data.error === "string"
+            ? data.error
+            : "Monitor request failed (HTTP " + res.status + ")";
+        throw new Error(message);
+      }
+      const rows = Array.isArray(data)
+        ? data
+        : data && typeof data === "object" && "data" in data && Array.isArray(data.data)
+          ? data.data
+          : null;
+      if (!rows) throw new Error("The monitor API returned an unexpected response format.");
+      setMonitors(rows as Monitor[]);
+      void fetchSummary();
     } catch (error) {
       console.error("Failed to fetch monitors", error);
+      setMonitors([]);
+      toast.error(error instanceof Error ? error.message : "Unable to load monitors");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateMonitor = async () => {
+    const name = window.prompt("Monitor name");
+    if (!name?.trim()) return;
+    const url = window.prompt("Public HTTP/HTTPS URL to monitor");
+    if (!url?.trim()) return;
+    try {
+      const res = await authenticatedFetch("/api/monitors", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim(), url: url.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to create monitor");
+      setMonitors(prev => [...prev, data]);
+      setSelectedMonitorId(data.id);
+      toast.success("Monitor created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create monitor");
     }
   };
 
   const handleTriggerFallback = async (id: string) => {
     try {
-      const res = await fetch(`/api/monitors/${id}/fallback`, {
+      const res = await authenticatedFetch(`/api/monitors/${id}/fallback`, {
         method: "POST",
       });
       if (!res.ok) throw new Error("Failed to trigger fallback");
@@ -107,7 +176,7 @@ export default function App() {
 
   const handleCheckHealth = async (id: string) => {
     try {
-      const res = await fetch(`/api/monitors/${id}/check`);
+      const res = await authenticatedFetch(`/api/monitors/${id}/check`);
       if (!res.ok) throw new Error("Health check failed");
       return await res.json();
     } catch (error) {
@@ -127,7 +196,26 @@ export default function App() {
       <Toaster position="top-right" />
       
       <AnimatePresence>
-        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+        {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} onCreateMonitor={async ({ name, url, alertEmail }) => {
+            const res = await authenticatedFetch("/api/monitors", {
+              method: "POST",
+              body: JSON.stringify({ name, url, alertEmail })
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(data?.error || "Failed to create monitor");
+            setMonitors(prev => [...prev, data]);
+            setSelectedMonitorId(data.id);
+            try {
+              const health = await handleCheckHealth(data.id);
+              const updated = { ...data, ...health };
+              setMonitors(prev => prev.map(m => m.id === data.id ? { ...m, ...updated } : m));
+              toast.success("First health check complete");
+              return updated;
+            } catch {
+              toast.warning("Monitor created, but the first health check could not complete yet.");
+              return data;
+            }
+          }} />}
       </AnimatePresence>
       {/* Header */}
       <header className="border-b border-[#141414] p-6 flex justify-between items-center bg-[#E4E3E0] sticky top-0 z-50">
@@ -145,8 +233,8 @@ export default function App() {
           <div className="text-right hidden md:block">
             <p className="text-[10px] uppercase tracking-widest opacity-60">System Status</p>
             <div className="flex items-center gap-2 justify-end">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-xs font-mono uppercase">All Systems Operational</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${summary.status === "critical" ? "bg-red-500" : summary.status === "attention" ? "bg-yellow-500" : "bg-green-500"}`} />
+              <span className="text-xs font-mono uppercase">{summary.status === "critical" ? "Critical Issues" : summary.status === "attention" ? "Attention Required" : "All Systems Operational"}</span>
             </div>
           </div>
           <Button 
@@ -167,9 +255,14 @@ export default function App() {
           >
             <HelpCircle className="w-4 h-4" />
           </Button>
-          <Button variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
+          <Button onClick={handleCreateMonitor} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-6">
             <Plus className="w-4 h-4 mr-2" /> NEW MONITOR
           </Button>
+          {authConfigured && authenticated && (
+            <Button onClick={() => { signOut(); setAuthenticated(false); setMonitors([]); setSelectedMonitorId(null); }} variant="outline" className="border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] rounded-none px-4">
+              SIGN OUT
+            </Button>
+          )}
         </div>
       </header>
 
@@ -206,12 +299,12 @@ export default function App() {
             </CardHeader>
             <CardContent className="py-6 space-y-4">
               <div className="flex justify-between items-end">
-                <span className="text-5xl font-bold tracking-tighter">97.4%</span>
+                <span className="text-5xl font-bold tracking-tighter">{summary.aggregateReliability.toFixed(1)}%</span>
                 <span className="text-[10px] uppercase tracking-widest opacity-60 mb-2">Aggregate Health</span>
               </div>
-              <Progress value={97.4} className="h-2 rounded-none bg-[#E4E3E0]/20" />
+              <Progress value={summary.aggregateReliability} className="h-2 rounded-none bg-[#E4E3E0]/20" />
               <p className="text-xs opacity-70 leading-relaxed italic">
-                "Overall infrastructure is stable. Minor degradation detected in Twilio SMS endpoints. Predictive analysis suggests 12% risk of failure in next 12h."
+                `Live fleet: ${summary.total} monitors, ${summary.healthy} healthy, ${summary.degraded} degraded, ${summary.down} down.`
               </p>
             </CardContent>
           </Card>

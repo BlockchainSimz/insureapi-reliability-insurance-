@@ -1,287 +1,573 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
+import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
-import nodemailer from "nodemailer";
+import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
+import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
+import type { Query } from "firebase-admin/firestore";
+import { runMonitorWorkerOnce } from "./monitor-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Email Transporter Setup (Mock for demo, use real SMTP in production)
-let transporter: nodemailer.Transporter;
+const PORT = Number(process.env.PORT || 3000);
+const NODE_ENV = process.env.NODE_ENV || "development";
+const AUTH_REQUIRED = process.env.AUTH_REQUIRED === "true" || NODE_ENV === "production";
+const APP_URL = process.env.APP_URL || "";
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "";
 
-async function setupEmail() {
-  // For demo purposes, we'll use a test account from Ethereal
-  // In production, you would use process.env.SMTP_HOST, etc.
-  try {
-    const testAccount = await nodemailer.createTestAccount();
-    transporter = nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
-      auth: {
-        user: testAccount.user,
-        pass: testAccount.pass,
-      },
-    });
-    console.log("Email service initialized (Ethereal Test Account)");
-  } catch (error) {
-    console.error("Failed to initialize email service", error);
-    // Fallback to console logging if Ethereal fails
-    transporter = nodemailer.createTransport({
-      jsonTransport: true
-    });
-  }
+const DEMO_MODE = process.env.DEMO_MODE === "true";
+
+type AuthUser = { id: string; email?: string };
+type AuthedRequest = Request & { user?: AuthUser };
+
+const demoMonitors = [
+  { id: "demo-1", name: "Stripe API", url: "https://api.stripe.com/health", status: "up", latency: 45, lastChecked: new Date().toISOString(), reliabilityScore: 99.8, fallbackUrl: "", alertEmail: "", history: [] },
+  { id: "demo-2", name: "Twilio SMS", url: "https://api.twilio.com/health", status: "degraded", latency: 450, lastChecked: new Date().toISOString(), reliabilityScore: 94.2, fallbackUrl: "", alertEmail: "", history: [] }
+];
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function isDemoMode() {
+  return DEMO_MODE || (!AUTH_REQUIRED && !firebaseAdminConfigured);
 }
 
-async function sendAlertEmail(to: string, monitorName: string, type: string, latency: number) {
-  if (!transporter) return;
-
-  const isReport = type.includes("REPORT");
-  const subject = isReport 
-    ? `📊 SLA COMPLIANCE REPORT: ${monitorName}`
-    : `⚠️ SLA BREACH DETECTED: ${monitorName}`;
-  
-  const title = isReport ? "SLA COMPLIANCE REPORT" : "SLA BREACH DETECTED";
-  const color = isReport ? "#141414" : "#e11d48";
-
-  const info = await transporter.sendMail({
-    from: '"InsureAPI Alert System" <alerts@insureapi.com>',
-    to: to,
-    subject: subject,
-    text: `${title} for ${monitorName}.\nType: ${type}\n${latency > 0 ? `Latency: ${latency}ms\n` : ''}Timestamp: ${new Date().toISOString()}\n\nPlease check the dashboard for details.`,
-    html: `
-      <div style="font-family: sans-serif; padding: 20px; border: 1px solid #141414;">
-        <h2 style="color: ${color}; text-transform: uppercase; letter-spacing: 0.1em;">${title}</h2>
-        <p><strong>Monitor:</strong> ${monitorName}</p>
-        <p><strong>Event Type:</strong> ${type.replace(/_/g, ' ')}</p>
-        ${latency > 0 ? `<p><strong>Latency:</strong> ${latency}ms</p>` : ''}
-        <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-        <div style="margin-top: 20px; padding: 15px; background: #f4f4f4; border-left: 4px solid ${color};">
-          <p style="margin: 0; font-size: 13px;">${isReport ? 'A manual compliance report has been generated for this endpoint.' : 'An immediate SLA breach has been detected and requires attention.'}</p>
-        </div>
-        <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;" />
-        <p style="font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.05em;">This is an automated transmission from InsureAPI Systems Mission Control.</p>
-      </div>
-    `,
-  });
-
-  console.log("Alert email sent: %s", info.messageId);
-  if (nodemailer.getTestMessageUrl(info)) {
-    console.log("Preview URL: %s", nodemailer.getTestMessageUrl(info));
-  }
+function validateEmail(value: unknown) {
+  if (typeof value !== "string" || value.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-async function startServer() {
-  await setupEmail();
+async function validateTargetUrl(raw: unknown) {
+  if (typeof raw !== "string") throw new Error("Invalid URL");
+  const target = await resolvePublicHttpTarget(raw);
+  return target.url;
+}
+
+function securityHeaders(req: Request, res: Response, next: NextFunction) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-ancestors 'none'");
+  next();
+}
+
+function cors(req: Request, res: Response, next: NextFunction) {
+  const origin = req.headers.origin;
+  if (!req.path.startsWith("/api/")) return next();
+
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const protocol = forwardedProto || req.protocol;
+  const requestOrigin = req.get("host") ? protocol + "://" + req.get("host") : "";
+  const allowed = !origin || origin === APP_URL || origin === requestOrigin;
+
+  if (!allowed) return res.status(403).json({ error: "Origin not allowed" });
+
+  if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  return next();
+}
+
+function rateLimit(req: Request, res: Response, next: NextFunction) {
+  const now = Date.now();
+  const key = req.ip || req.socket.remoteAddress || "unknown";
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
+    return next();
+  }
+  bucket.count += 1;
+  if (bucket.count > 120) return res.status(429).json({ error: "Too many requests" });
+  next();
+}
+
+async function getFirebaseUser(token: string): Promise<AuthUser | null> {
+  const decoded = await verifyFirebaseIdToken(token);
+  return decoded?.uid ? { id: decoded.uid, email: decoded.email } : null;
+}
+
+async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (isDemoMode()) return next();
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Bearer ")) return res.status(401).json({ error: "Authentication required" });
+  const user = await getFirebaseUser(header.slice(7));
+  if (!user) return res.status(401).json({ error: "Invalid or expired Firebase session" });
+  req.user = user;
+  next();
+}
+
+function requireFirebase(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (isDemoMode()) return next();
+  if (!firebaseAdminConfigured || !firestore || !req.user) {
+    return res.status(503).json({ error: "Firebase persistence is not configured" });
+  }
+  next();
+}
+
+async function monitorOwnedBy(req: AuthedRequest, monitorId: string) {
+  if (isDemoMode()) return true;
+  if (!firestore || !req.user) return false;
+  const snap = await firestore.collection("monitors").doc(monitorId).get();
+  return snap.exists && snap.data()?.owner_id === req.user.id;
+}
+
+function parseValue(value: string) {
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+async function firestoreRequest(req: AuthedRequest, resource: string, init: RequestInit = {}): Promise<any> {
+  if (!firestore || !req.user) throw new Error("Firebase is not configured");
+  const [path, queryString = ""] = resource.split("?");
+  const segments = path.split("/").filter(Boolean);
+  const collectionName = segments[0];
+  const params = new URLSearchParams(queryString);
+  const method = init.method || "GET";
+  const body = init.body ? JSON.parse(String(init.body)) : undefined;
+
+  if (collectionName === "rpc" && segments[1] === "calculate_monitor_reliability") {
+    const monitorId = body?.p_monitor_id;
+    const hours = Number(body?.p_window_hours || 24);
+    if (!monitorId || !(await monitorOwnedBy(req, monitorId))) throw new Error("Monitor not found");
+    const cutoff = Date.now() - hours * 3600000;
+    const snap = await firestore.collection("monitor_checks").where("monitor_id", "==", monitorId).get();
+    const checks = snap.docs.map(d => d.data()).filter(row => Date.parse(String(row.checked_at || "")) >= cutoff);
+    return checks.length ? Number(((checks.filter(row => row.ok).length / checks.length) * 100).toFixed(2)) : 100;
+  }
+
+  const idMatch = params.get("id")?.match(/^eq\.(.+)$/);
+  if (method === "GET") {
+    let query: Query = firestore.collection(collectionName);
+    if (collectionName === "monitors" && !isDemoMode()) query = query.where("owner_id", "==", req.user.id);
+    const monitorFilter = params.get("monitor_id")?.match(/^eq\.(.+)$/);
+    if (monitorFilter && !isDemoMode() && !(await monitorOwnedBy(req, decodeURIComponent(monitorFilter[1])))) throw new Error("Monitor not found");
+    for (const [key, raw] of params.entries()) {
+      if (["order","limit","select"].includes(key)) continue;
+      const match = raw.match(/^(eq|gte|lte)\.(.*)$/);
+      if (match && key !== "monitor_id") query = query.where(key, match[1] === "eq" ? "==" : match[1] === "gte" ? ">=" : "<=", parseValue(match[2]));
+    }
+    const snap = await query.get();
+    let rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const order = params.get("order");
+    if (order) {
+      const [field, direction = "asc"] = order.split(".");
+      rows.sort((a: any,b: any) => {
+        const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+        const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+        const left = typeof av === "string" ? Date.parse(av) || av : av;
+        const right = typeof bv === "string" ? Date.parse(bv) || bv : bv;
+        return left === right ? 0 : (left > right ? 1 : -1) * (direction === "desc" ? -1 : 1);
+      });
+    }
+    const limit = Number(params.get("limit") || 0);
+    if (limit > 0) rows = rows.slice(0, Math.min(limit, 100));
+    return rows;
+  }
+  if (method === "POST") {
+    const data = { ...(body || {}) };
+    if (collectionName === "monitors") data.owner_id = req.user.id;
+    if (collectionName === "monitor_checks" && !data.checked_at) data.checked_at = new Date().toISOString();
+    if (collectionName === "monitor_incidents" && !data.started_at) data.started_at = new Date().toISOString();
+    if (collectionName === "monitor_alerts" && !data.created_at) data.created_at = new Date().toISOString();
+    const ref = await firestore.collection(collectionName).add(data);
+    return [{ id: ref.id, ...data }];
+  }
+  if (method === "PATCH" || method === "DELETE") {
+    if (!idMatch) throw new Error("Firebase update requires a document id");
+    const id = decodeURIComponent(idMatch[1]);
+    const ref = firestore.collection(collectionName).doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return [];
+    const data = snap.data() || {};
+    if (collectionName === "monitors" && data.owner_id !== req.user.id) throw new Error("Monitor not found");
+    if (collectionName !== "monitors" && data.monitor_id && !(await monitorOwnedBy(req, String(data.monitor_id)))) throw new Error("Monitor not found");
+    if (method === "PATCH") {
+      await ref.update(body || {});
+      const updated = await ref.get();
+      return updated.exists ? [{ id: updated.id, ...updated.data() }] : [];
+    }
+    await ref.delete();
+    return [{ id }];
+  }
+  throw new Error("Unsupported Firebase request");
+}
+
+function mapMonitor(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    status: row.status,
+    latency: row.latency_ms,
+    lastChecked: row.last_checked_at,
+    reliabilityScore: Number(row.reliability_score),
+    fallbackUrl: row.fallback_url || "",
+    alertEmail: row.alert_email || "",
+    history: []
+  };
+}
+
+export async function createApp() {
   const app = express();
-  const PORT = 3000;
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+  app.use(securityHeaders);
+  app.use(cors);
+  // Static frontend assets must not be blocked by the API rate limiter. The
+  // limiter is applied to API routes below, after health/auth config routes.
+  app.use(express.json({ limit: "1mb" }));
 
-  app.use(express.json());
-
-  // Mock database for monitors
-  let monitors = [
-    {
-      id: "1",
-      name: "Stripe API",
-      url: "https://api.stripe.com/health",
-      status: "up",
-      latency: 45,
-      lastChecked: new Date().toISOString(),
-      reliabilityScore: 99.8,
-      fallbackUrl: "https://fallback-api.stripe.com/health",
-      alertEmail: "",
-      history: Array.from({ length: 20 }, (_, i) => ({
-        timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
-        latency: 40 + Math.random() * 20,
-        status: "up"
-      }))
-    },
-    {
-      id: "2",
-      name: "Twilio SMS",
-      url: "https://api.twilio.com/health",
-      status: "degraded",
-      latency: 450,
-      lastChecked: new Date().toISOString(),
-      reliabilityScore: 94.2,
-      fallbackUrl: "https://messagebird.com/api/health",
-      alertEmail: "",
-      history: Array.from({ length: 20 }, (_, i) => ({
-        timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
-        latency: i > 15 ? 400 + Math.random() * 100 : 50 + Math.random() * 20,
-        status: i > 15 ? "degraded" : "up"
-      }))
-    },
-    {
-      id: "3",
-      name: "New Service",
-      url: "https://new-service.example.com/health",
-      status: "up",
-      latency: 52,
-      lastChecked: new Date().toISOString(),
-      reliabilityScore: 100,
-      fallbackUrl: "https://backup-new-service.example.com/health",
-      alertEmail: "",
-      history: Array.from({ length: 20 }, (_, i) => ({
-        timestamp: new Date(Date.now() - (20 - i) * 3600000).toISOString(),
-        latency: 50 + Math.random() * 10,
-        status: "up"
-      }))
-    }
-  ];
-
-  // API Routes
-  app.get("/api/monitors", (req, res) => {
-    res.json(monitors);
-  });
-
-  app.put("/api/monitors/:id/alerts", (req, res) => {
-    const monitor = monitors.find(m => m.id === req.params.id);
-    if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-    
-    monitor.alertEmail = req.body.email;
-    res.json({ message: "Alert email updated", monitor });
-  });
-
-  app.post("/api/monitors/:id/notify", async (req, res) => {
-    const monitor = monitors.find(m => m.id === req.params.id);
-    if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-    
-    const { email, type, latency } = req.body;
-    try {
-      await sendAlertEmail(email || monitor.alertEmail, monitor.name, type || "MANUAL_ALERT", latency || monitor.latency);
-      res.json({ message: "Notification sent" });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to send notification" });
-    }
-  });
-
-  app.post("/api/monitors", (req, res) => {
-    const newMonitor = {
-      id: Math.random().toString(36).substr(2, 9),
-      ...req.body,
-      status: "checking",
-      latency: 0,
-      lastChecked: new Date().toISOString(),
-      reliabilityScore: 100,
-      history: []
+  app.get("/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/api/auth/config", (_req, res) => {
+    const config = {
+      apiKey: process.env.VITE_FIREBASE_API_KEY || "",
+      authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN || "",
+      projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "",
+      storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET || "",
+      messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+      appId: process.env.VITE_FIREBASE_APP_ID || "",
     };
-    monitors.push(newMonitor);
-    res.status(201).json(newMonitor);
+    if (!config.apiKey || !config.authDomain || !config.projectId || !config.appId) {
+      return res.status(503).json({ error: "Firebase web authentication configuration is unavailable" });
+    }
+    return res.json(config);
   });
 
-  app.get("/api/monitors/:id/history", (req, res) => {
-    const monitor = monitors.find(m => m.id === req.params.id);
-    if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-    res.json(monitor.history);
-  });
-
-  app.post("/api/monitors/:id/fallback", (req, res) => {
-    const monitor = monitors.find(m => m.id === req.params.id);
-    if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-    
-    monitor.status = "degraded";
-    monitor.reliabilityScore = Math.max(0, monitor.reliabilityScore - 5);
-    
-    // Log fallback event in history
-    monitor.history.push({
-      timestamp: new Date().toISOString(),
-      latency: monitor.latency,
-      status: "fallback_activated"
-    });
-
-    res.json({ message: "Fallback activated", monitor });
-  });
-
-  app.get("/api/monitors/:id/check", async (req, res) => {
-    const monitor = monitors.find(m => m.id === req.params.id);
-    if (!monitor) return res.status(404).json({ error: "Monitor not found" });
-
+  app.get("/ready", async (_req, res) => {
+    const configured = Boolean(getFirebaseAdminIdentity().projectId && firebaseAdminConfigured && firebaseAuth && firestore);
+    if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
+    if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
     try {
-      const start = Date.now();
-      // We'll try a real request, but fallback to mock if it fails/times out
-      // to ensure the UI always shows something meaningful in this demo environment
-      const response = await axios.get(monitor.url, { timeout: 3000 }).catch(() => null);
-      const latency = Date.now() - start;
-
-      const result = {
-        status: response ? response.status : 503,
-        statusText: response ? response.statusText : "Service Unavailable",
-        latency: latency,
-        timestamp: new Date().toISOString(),
-        ok: response ? response.status >= 200 && response.status < 300 : false
-      };
-
-      res.json(result);
-    } catch (error) {
-      res.status(500).json({ error: "Health check failed" });
+      await firestore!.collection("_health").doc("readiness").set({ checked_at: new Date().toISOString() });
+      return res.json({ ready: true, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: true });
+    } catch {
+      return res.status(503).json({ ready: false, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: false });
     }
   });
 
-  // Background monitoring simulation
-  setInterval(async () => {
-    for (const monitor of monitors) {
-      try {
-        const start = Date.now();
-        // Simulate variability
-        const latency = Math.floor(Math.random() * 100) + (monitor.status === "degraded" ? 300 : 0);
-        
-        const oldStatus = monitor.status;
-        const oldLatency = monitor.latency;
-        
-        monitor.latency = latency;
-        monitor.lastChecked = new Date().toISOString();
-        
-        // Check for SLA breaches
-        const isBreach = monitor.status !== "up" || monitor.latency > 250;
-        const wasBreach = oldStatus !== "up" || oldLatency > 250;
 
-        // If a new breach occurs and we have an alert email, send it
-        if (isBreach && !wasBreach && monitor.alertEmail) {
-          console.log(`[ALERT] SLA Breach detected for ${monitor.name}. Sending email to ${monitor.alertEmail}`);
-          sendAlertEmail(
-            monitor.alertEmail, 
-            monitor.name, 
-            monitor.status !== "up" ? "DOWNTIME" : "LATENCY_BREACH", 
-            monitor.latency
-          ).catch(err => console.error("Failed to send automated alert", err));
-        }
-
-        // Add to history
-        monitor.history.push({
-          timestamp: monitor.lastChecked,
-          latency: monitor.latency,
-          status: monitor.status
-        });
-        if (monitor.history.length > 50) monitor.history.shift();
-
-      } catch (error) {
-        monitor.status = "down";
-        monitor.latency = 0;
-      }
+  // Public platform health routes remain available after the API is moved to Vercel.
+  app.get("/api/health", (_req, res) => res.json({ ok: true, service: "insureapi", environment: NODE_ENV, timestamp: new Date().toISOString() }));
+  app.get("/api/ready", async (_req, res) => {
+    const configured = Boolean(getFirebaseAdminIdentity().projectId && firebaseAdminConfigured && firebaseAuth && firestore);
+    if (isDemoMode()) return res.json({ ready: true, mode: "demo", persistence: false, authRequired: false });
+    if (!configured) return res.status(503).json({ ready: false, mode: "production", persistence: false, authRequired: AUTH_REQUIRED });
+    try {
+      await firestore!.collection("_health").doc("readiness").set({ checked_at: new Date().toISOString() });
+      return res.json({ ready: true, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: true });
+    } catch {
+      return res.status(503).json({ ready: false, mode: "production", persistence: true, authRequired: AUTH_REQUIRED, authService: false });
     }
-  }, 30000); // Check every 30 seconds
+  });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+  // Vercel Cron invokes this route. The secret check happens before user auth.
+  app.get("/api/cron/monitor-worker", async (req, res) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret || req.headers.authorization !== "Bearer " + cronSecret) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const result = await runMonitorWorkerOnce();
+      if (result.failedTicks > 0) return res.status(500).json({ ok: false, ...result });
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      console.error("[monitor-worker] scheduled run failed", sanitizeFirebaseError(error));
+      return res.status(503).json({ ok: false, error: "Monitor worker is not configured" });
+    }
+  });
+
+  app.use("/api", rateLimit, requireAuth);
+
+  // Gemini stays server-side; never ship the provider API key to browsers.
+  app.post("/api/ai/predict-outage", async (req: AuthedRequest, res: Response) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: "AI insights are not configured on the server yet." });
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-200) : [];
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "Analyze this API performance history and estimate outage likelihood in the next 24 hours. Use evidence in the data and avoid overstating certainty. Performance history: " + JSON.stringify(history),
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              probability: { type: Type.NUMBER },
+              reasoning: { type: Type.STRING },
+              recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+              riskLevel: { type: Type.STRING, enum: ["Low", "Medium", "High", "Critical"] }
+            },
+            required: ["probability", "reasoning", "recommendations", "riskLevel"]
+          }
+        }
+      });
+      return res.json(JSON.parse(response.text || "{}"));
+    } catch (error) {
+      console.error("Gemini outage prediction failed", error instanceof Error ? error.message : "Unknown error");
+      return res.status(502).json({ error: "AI outage prediction failed. Please try again later." });
+    }
+  });
+
+  app.post("/api/ai/quantify-damages", async (req: AuthedRequest, res: Response) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: "AI damage assessment is not configured on the server yet." });
+    const downtimeMinutes = Number(req.body?.downtimeMinutes);
+    const businessContext = typeof req.body?.businessContext === "string" ? req.body.businessContext.slice(0, 2000) : "";
+    if (!Number.isFinite(downtimeMinutes) || downtimeMinutes < 1 || downtimeMinutes > 525600) {
+      return res.status(400).json({ error: "Downtime must be between 1 and 525600 minutes." });
+    }
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "Estimate potential financial damages in USD for an API outage lasting " + downtimeMinutes + " minutes. Business context: " + businessContext + ". Return a reasoned estimate, not a guaranteed insurance payout.",
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              estimatedLoss: { type: Type.NUMBER },
+              breakdown: {
+                type: Type.OBJECT,
+                properties: {
+                  directLoss: { type: Type.NUMBER },
+                  indirectLoss: { type: Type.NUMBER },
+                  reputationDamage: { type: Type.NUMBER }
+                },
+                required: ["directLoss", "indirectLoss", "reputationDamage"]
+              },
+              claimJustification: { type: Type.STRING }
+            },
+            required: ["estimatedLoss", "breakdown", "claimJustification"]
+          }
+        }
+      });
+      return res.json(JSON.parse(response.text || "{}"));
+    } catch (error) {
+      console.error("Gemini damage assessment failed", error instanceof Error ? error.message : "Unknown error");
+      return res.status(502).json({ error: "AI damage assessment failed. Please try again later." });
+    }
+  });
+
+  app.get("/api/dashboard/summary", async (req: AuthedRequest, res) => {
+    try {
+      if (isDemoMode()) {
+        const total = demoMonitors.length;
+        const healthy = demoMonitors.filter(m => m.status === "up").length;
+        const score = demoMonitors.reduce((sum, m) => sum + m.reliabilityScore, 0) / Math.max(total, 1);
+        return res.json({ total, healthy, degraded: demoMonitors.filter(m => m.status === "degraded").length, down: demoMonitors.filter(m => m.status === "down").length, aggregateReliability: Number(score.toFixed(2)), status: healthy === total ? "operational" : "attention" });
+      }
+      const rows = await firestoreRequest(req, "monitors", { method: "GET", headers: { Prefer: "return=representation" } });
+      const monitors = rows || [];
+      const total = monitors.length;
+      const healthy = monitors.filter((m: any) => m.status === "up").length;
+      const degraded = monitors.filter((m: any) => m.status === "degraded").length;
+      const down = monitors.filter((m: any) => m.status === "down").length;
+      const aggregateReliability = total ? monitors.reduce((sum: number, m: any) => sum + Number(m.reliability_score || 0), 0) / total : 100;
+      return res.json({ total, healthy, degraded, down, aggregateReliability: Number(aggregateReliability.toFixed(2)), status: down > 0 ? "critical" : degraded > 0 ? "attention" : "operational" });
+    } catch (error) {
+      console.error("dashboard summary failed", error);
+      return res.status(500).json({ error: "Failed to load dashboard summary" });
+    }
+  });
+
+  app.get("/api/monitors", async (req: AuthedRequest, res) => {
+    try {
+      if (isDemoMode()) return res.json(demoMonitors);
+      const rows = await firestoreRequest(req, "monitors", { method: "GET", headers: { Prefer: "return=representation" } });
+      return res.json((rows || []).map(mapMonitor));
+    } catch (error) {
+      console.error("list monitors failed", error);
+      return res.status(500).json({ error: "Failed to load monitors" });
+    }
+  });
+
+  app.post("/api/monitors", requireFirebase, async (req: AuthedRequest, res) => {
+    const { name, url, fallbackUrl, alertEmail, latencyThreshold, uptimeTarget } = req.body || {};
+    if (typeof name !== "string" || name.trim().length < 1 || name.trim().length > 120) return res.status(400).json({ error: "Invalid monitor name" });
+    if (alertEmail !== undefined && alertEmail !== "" && !validateEmail(alertEmail)) return res.status(400).json({ error: "Invalid alert email" });
+    try {
+      const safeUrl = await validateTargetUrl(url);
+      const safeFallback = fallbackUrl ? await validateTargetUrl(fallbackUrl) : null;
+      const row = {
+        owner_id: req.user!.id,
+        name: name.trim(),
+        url: safeUrl,
+        fallback_url: safeFallback,
+        alert_email: alertEmail || null,
+        latency_threshold_ms: Number.isInteger(latencyThreshold) ? Math.min(60000, Math.max(1, latencyThreshold)) : 250,
+        uptime_target: typeof uptimeTarget === "number" ? Math.min(100, Math.max(0, uptimeTarget)) : 99.9
+      };
+      const created = await firestoreRequest(req, "monitors", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(row)
+      });
+      return res.status(201).json(mapMonitor(created[0]));
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor" });
+    }
+  });
+
+  app.patch("/api/monitors/:id", requireFirebase, async (req: AuthedRequest, res) => {
+    const body = req.body || {};
+    const patch: Record<string, unknown> = {};
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || body.name.trim().length < 1 || body.name.trim().length > 120) return res.status(400).json({ error: "Invalid monitor name" });
+      patch.name = body.name.trim();
+    }
+    try {
+      if (body.url !== undefined) patch.url = await validateTargetUrl(body.url);
+      if (body.fallbackUrl !== undefined) patch.fallback_url = body.fallbackUrl ? await validateTargetUrl(body.fallbackUrl) : null;
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Invalid monitor URL" });
+    }
+    if (body.enabled !== undefined) {
+      if (typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled must be boolean" });
+      patch.enabled = body.enabled;
+    }
+    if (body.checkIntervalSeconds !== undefined) {
+      const value = Number(body.checkIntervalSeconds);
+      if (!Number.isInteger(value) || value < 10 || value > 86400) return res.status(400).json({ error: "checkIntervalSeconds must be 10-86400" });
+      patch.check_interval_seconds = value;
+    }
+    if (body.latencyThreshold !== undefined) {
+      const value = Number(body.latencyThreshold);
+      if (!Number.isInteger(value) || value < 1 || value > 60000) return res.status(400).json({ error: "latencyThreshold must be 1-60000" });
+      patch.latency_threshold_ms = value;
+    }
+    try {
+      const rows = await firestoreRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.json(mapMonitor(rows[0]));
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "Failed to update monitor" });
+    }
+  });
+
+  app.delete("/api/monitors/:id", requireFirebase, async (req: AuthedRequest, res) => {
+    try {
+      const rows = await firestoreRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), { method: "DELETE", headers: { Prefer: "return=representation" } });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.status(204).send();
+    } catch {
+      return res.status(500).json({ error: "Failed to delete monitor" });
+    }
+  });
+
+  app.put("/api/monitors/:id/alerts", requireFirebase, async (req: AuthedRequest, res) => {
+    const email = req.body?.email;
+    if (typeof email !== "string" || (email && !validateEmail(email))) return res.status(400).json({ error: "Invalid alert email" });
+    try {
+      const rows = await firestoreRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id), {
+        method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify({ alert_email: email || null })
+      });
+      if (!rows?.length) return res.status(404).json({ error: "Monitor not found" });
+      return res.json({ message: "Alert email updated", monitor: mapMonitor(rows[0]) });
+    } catch { return res.status(500).json({ error: "Failed to update alert settings" }); }
+  });
+
+  app.get("/api/monitors/:id/history", requireFirebase, async (req: AuthedRequest, res) => {
+    try {
+      const rows = await firestoreRequest(req, "monitor_checks?monitor_id=eq." + encodeURIComponent(req.params.id) + "&order=checked_at.desc&limit=50");
+      return res.json((rows || []).map((row: any) => ({
+        timestamp: row.checked_at, latency: row.latency_ms, status: row.ok ? "up" : "down"
+      })).reverse());
+    } catch { return res.status(500).json({ error: "Failed to load monitor history" }); }
+  });
+
+  app.get("/api/monitors/:id/check", async (req: AuthedRequest, res) => {
+    try {
+      const monitorRows = isDemoMode()
+        ? demoMonitors.filter(m => m.id === req.params.id)
+        : await firestoreRequest(req, "monitors?id=eq." + encodeURIComponent(req.params.id));
+      const monitor = monitorRows?.[0];
+      if (!monitor) return res.status(404).json({ error: "Monitor not found" });
+      const target = await resolvePublicHttpTarget(monitor.url);
+      const started = Date.now();
+      const response = await axios.get(target.url, {
+        timeout: 5000,
+        maxRedirects: 0,
+        validateStatus: () => true,
+        ...pinnedAgents(target)
+      });
+      const latency = Date.now() - started;
+      return res.json({ status: response.status, statusText: response.statusText, latency, timestamp: new Date().toISOString(), ok: response.status >= 200 && response.status < 300 });
+    } catch (error) {
+      return res.json({ status: 503, statusText: "Service Unavailable", latency: 0, timestamp: new Date().toISOString(), ok: false });
+    }
+  });
+
+  app.post("/api/monitors/:id/fallback", requireFirebase, async (_req, res) => {
+    res.status(501).json({ error: "Traffic failover requires a deployment-specific routing integration; Phase 3 only verifies and records fallback health." });
+  });
+
+  app.post("/api/monitors/:id/notify", requireFirebase, async (_req, res) => {
+    res.status(501).json({ error: "Notifications are handled by the Phase 3 worker alert outbox and SMTP dispatcher." });
+  });
+
+  if (NODE_ENV !== "production") {
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      maxAge: "1h",
+      setHeaders(res, filePath) {
+        // HTML must always revalidate so a new deployment cannot leave browsers
+        // running an old entry-point against freshly fingerprinted assets.
+        if (path.basename(filePath).toLowerCase() === "index.html") {
+          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        } else if (filePath.includes(path.sep + "assets" + path.sep)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      }
+    }));
     app.get("*", (req, res) => {
+      if (req.path.startsWith("/api/")) return res.status(404).json({ error: "API route not found" });
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    console.error("Unhandled request error", err);
+    res.status(500).json({ error: "Internal server error" });
   });
+
+  return app;
 }
 
-startServer();
+if (import.meta.url === new URL(process.argv[1], "file://").href) {
+  createApp().then(app => {
+    app.listen(PORT, "0.0.0.0", () => {
+    const identity = getFirebaseAdminIdentity();
+    console.log("[firebase] config", JSON.stringify({
+      projectId: identity.projectId,
+      clientEmail: identity.clientEmail,
+      keyPresent: identity.keyPresent,
+      keyFormat: identity.keyFormat,
+      keyLength: identity.keyLength,
+    }));
+    if (firebaseAdminConfigured && firestore) {
+      void verifyFirestoreConnection()
+        .then(() => console.log("[firebase] Firestore connectivity verified"))
+        .catch((error) => console.error("[firebase] Firestore connectivity failed", error instanceof Error ? error.message : String(error)));
+    }
+      console.log("InsureAPI server listening on port " + PORT);
+    });
+  }).catch(error => {
+    console.error("Fatal startup error", sanitizeFirebaseError(error));
+    process.exit(1);
+  });
+}
