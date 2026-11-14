@@ -7,7 +7,7 @@ import axios from "axios";
 import { resolvePublicHttpTarget, pinnedAgents } from "./src/monitor/security.js";
 import { firebaseAdminConfigured, firebaseAuth, firestore, verifyFirebaseIdToken, getFirebaseAdminIdentity, verifyFirestoreConnection, sanitizeFirebaseError } from "./src/server/firebase-admin.js";
 import type { Query } from "firebase-admin/firestore";
-import { runMonitorWorkerWindow } from "./monitor-worker.js";
+import { runMonitorWorkerOnce } from "./monitor-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -272,7 +272,7 @@ export async function createApp() {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
-      const result = await runMonitorWorkerWindow(270_000);
+      const result = await runMonitorWorkerOnce();
       if (result.failedTicks > 0) return res.status(500).json({ ok: false, ...result });
       return res.json({ ok: true, ...result });
     } catch (error) {
