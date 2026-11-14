@@ -1,0 +1,32 @@
+name: InsureAPI monitor worker
+
+on:
+  schedule:
+    # GitHub's minimum supported scheduled interval is five minutes.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: insureapi-monitor-worker
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the Vercel-hosted monitoring worker
+        env:
+          API_URL: https://insureapi-reliability-insurance.vercel.app
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CRON_SECRET}" ]]; then
+            echo "::error::Add the CRON_SECRET repository secret in GitHub Actions."
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error \
+            --max-time 290 \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${API_URL}/api/cron/monitor-worker"
